@@ -4,6 +4,11 @@ set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 source /opt/vastgame-build/core-vm.sh
 install_core_dependencies
+# Install generic network clients at build time; never authenticate either one.
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg > /usr/share/keyrings/tailscale-archive-keyring.gpg
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list > /etc/apt/sources.list.d/tailscale.list
+apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
+apt-get install -y --no-install-recommends tailscale rclone
 mkdir -p /etc/modprobe.d /etc/modules-load.d
 printf '%s\n' 'options nvidia_drm modeset=1' > /etc/modprobe.d/vastgame-nvidia-drm.conf
 printf '%s\n' uinput uhid > /etc/modules-load.d/vastgame-input.conf
@@ -60,7 +65,7 @@ if not env.get('PROTONPATH','').startswith('/home/retro/'):
     raise SystemExit('Build did not resolve an installed Proton version')
 (seed/'runtime-seed.json').write_text(json.dumps(env))
 # Keep runtime downloads, not the probe library, configuration, prefix or telemetry.
-for path in (seed/'library', seed/'share/pga.db', seed/'home/.config', seed/'home/.cache', seed/'home/.local/state'):
+for path in (seed/'library', seed/'share/pga.db', seed/'share/pga.db-wal', seed/'share/pga.db-shm', seed/'home/.config', seed/'home/.cache', seed/'home/.local/state'):
     if path.is_dir(): shutil.rmtree(path)
     else: path.unlink(missing_ok=True)
 PY
