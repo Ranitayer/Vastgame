@@ -15,6 +15,9 @@ echo
 bold "Stage 1/3 — Creating Vast VM"
 
 echo "Submitting selected offer directly to Vast..."
+if [[ -s "$CFGDIR/core-image.json" ]]; then
+    echo "Using the pinned prebuilt Core VM image."
+fi
 
 # The full bootstrap has grown beyond Vast's request-size limit.
 # Compress it locally and send a tiny self-extracting wrapper.
@@ -58,15 +61,19 @@ fi
 set +e
 
 create_out="$(
-    timeout --foreground 90s vastai create instance "$offer_id" \
-        --template_hash "$TEMPLATE_HASH" \
-        --onstart "$packed_onstart" \
-        --disk "$DISK_GB" \
-        --ssh \
-        --direct \
-        --label "$label" \
-        --cancel-unavail \
-        2>&1
+    if [[ -s "$CFGDIR/core-image.json" ]]; then
+        timeout --foreground 90s python3 "$APP_ROOT/src/manager/create_vm.py" \
+            "$CFGDIR/core-image.json" "$TEMPLATE_HASH" "$offer_id" "$DISK_GB" "$label" "$packed_onstart"
+    else
+        timeout --foreground 90s vastai create instance "$offer_id" \
+            --template_hash "$TEMPLATE_HASH" \
+            --onstart "$packed_onstart" \
+            --disk "$DISK_GB" \
+            --ssh \
+            --direct \
+            --label "$label" \
+            --cancel-unavail
+    fi 2>&1
 )"
 
 create_rc=$?

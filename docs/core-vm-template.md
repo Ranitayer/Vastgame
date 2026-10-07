@@ -124,7 +124,8 @@ Wolf identity and the small generic core archive still restore separately.
 Fresh Vast GPU/streaming acceptance is still pending.**
 A successful CI build validates the guest filesystem and runtime preparation, not
 Vast's host-specific KVM launch protocol, GPU passthrough, encoding or gameplay.
-The working official-image template remains selected until those checks succeed.
+The account template continues to supply authentication and SSH settings. The
+local image override described below selects the prebuilt disk for acceptance.
 Hardware virtualization is used when available, with software virtualization
 for builders without KVM. A build does not need a physical GPU; the final wrapper still uses Vast's KVM launcher.
 
@@ -157,7 +158,34 @@ ghcr.io/ranitayer/vastgame-core@sha256:1224b1502d72be0fb082eceb6e762f600621d3060
 
 Its single compressed layer is 8,613,022,221 bytes (about 8.6 GB). Local boot,
 Docker, GE-Proton11-7, Steam Runtime, DXVK/VKD3D and temporary-identity cleanup
-were checked. The package remains private and requires registry pull credentials.
-The existing Vast template is unchanged; this image has not yet passed a fresh
+were checked. The package must be public before enabling the launcher override;
+repository visibility does not change package visibility. The existing private
+Vast template is unchanged; this image has not yet passed a fresh
 Vast GPU/encoding/gameplay test. The immutable digest and validation receipt are
 attached to the `core-vm-527850c` experimental GitHub release.
+
+### Select the prebuilt image
+
+After making the compiled GHCR package public, save
+`~/.config/vastgame/core-image.json` with mode `600`:
+
+```json
+{
+  "image": "ghcr.io/ranitayer/vastgame-core@sha256:1224b1502d72be0fb082eceb6e762f600621d306032f137adc730a69731d1962",
+  "template_hash": "a4a9d7dbdd5453175cda4a4c4db1ab60",
+  "visibility": "public"
+}
+```
+
+Use your account's Core template hash if it differs. The launcher refuses an
+override belonging to another selected template. It uses Vast's create API with
+the pinned image and explicit `vm: true`, retaining the template's authentication
+and SSH settings, selected disk size, packed bootstrap and unique launch label.
+The installed Vast CLI does not expose that VM flag for custom images. Rental
+requests are never retried automatically; existing timeout recovery identifies
+the exact launch label. No GitHub pull credentials are sent to Vast.
+
+Run `vastgame force start still` to perform the fresh VM acceptance test. An
+existing instance reconnects instead; finish its verified stop first. To restore
+the official base image, rename or remove only `core-image.json`. Keep the
+account template and persistence configuration intact.

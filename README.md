@@ -32,9 +32,10 @@ locally. The custom native HUD and Crashpad are unavailable through Flatpak.
 
 The experimental prebuilt Core VM build is defined in
 [the Core VM guide](docs/core-vm-template.md). It prepares the actual guest disk
-and can be built locally or through GitHub Actions. The first private image
-is published and passed local boot/runtime checks; the working template remains
-selected until a fresh Vast GPU/streaming launch is validated.
+and can be built locally or through GitHub Actions. The first image is published
+and passed local boot/runtime checks. A local `core-image.json` selects its pinned
+digest for a fresh Vast launch; public package access is required. Fresh Vast
+GPU/streaming acceptance remains pending.
 
 ## Source layout
 
