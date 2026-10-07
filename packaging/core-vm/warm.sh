@@ -12,8 +12,11 @@ done
 docker build --network=host -t vastgame-preparation:v1 -f /opt/vastgame-build/preparation.Dockerfile /opt/vastgame-build
 seed=/opt/vastgame/runtime-seed
 mkdir -p "$seed" /opt/vastgame-build/{profiles,prefixes,shaders,status} /srv/gaming/{games,profiles,prefixes,saves,shaders,configs,lutris}
-uid=$(docker run --rm --runtime=runc --entrypoint id vastgame-preparation:v1 -u retro)
-gid=$(docker run --rm --runtime=runc --entrypoint id vastgame-preparation:v1 -g retro)
+# Match the existing live preparer's fallback: new GOW images create retro at entrypoint.
+uid=$(docker run --rm --runtime=runc --entrypoint id vastgame-preparation:v1 -u retro 2>/dev/null || true)
+gid=$(docker run --rm --runtime=runc --entrypoint id vastgame-preparation:v1 -g retro 2>/dev/null || true)
+[[ "$uid" =~ ^[0-9]+$ ]] || uid=1000
+[[ "$gid" =~ ^[0-9]+$ ]] || gid=1000
 cat >/opt/vastgame-build/profiles/core-cache.json <<'JSON'
 {"schema":1,"id":"core-cache","name":"Runtime build probe","version":"v1","game":{"executable":"cmd.exe","arguments":[]},"runner":{"type":"wine","version":"ge-proton"},"environment":{},"compatibility":{}}
 JSON
