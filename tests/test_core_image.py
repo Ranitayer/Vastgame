@@ -39,6 +39,15 @@ class CoreImageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'cache is incomplete'):
                 prepare_game.runtime_seed_environment(manifest,root)
 
+    def test_builder_avoids_root_passt_failure_and_checks_network_early(self):
+        workflow=(ROOT/'.github/workflows/core-vm.yml').read_text()
+        self.assertIn('bash packaging/core-vm/build.sh',workflow)
+        self.assertNotIn('sudo --preserve-env',workflow)
+        build=(ROOT/'packaging/core-vm/build.sh').read_text()
+        self.assertIn('[[ $(id -u) != 0 ]]',build)
+        self.assertLess(build.index('virt-customize --dry-run'),build.index('virt-resize --expand'))
+        self.assertLess(build.index('virt-customize --dry-run'),build.index("for pair in 'wolf stable'"))
+
     def test_no_prebuilt_seed_preserves_existing_preparation(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(prepare_game.runtime_seed_environment({'id':'fixture'},Path(tmp)),{})

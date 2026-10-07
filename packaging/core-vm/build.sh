@@ -2,6 +2,9 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")/../.."
 [[ $(uname -m) == x86_64 ]] || { echo 'Core VM build requires x86_64'; exit 1; }
+# libguestfs is root inside its appliance; the host process must remain unprivileged.
+# passt drops host-root privileges and cannot access root-private socket directories.
+[[ $(id -u) != 0 ]] || { echo 'Run the image builder without sudo; guest installation still runs as guest root'; exit 1; }
 for tool in docker virt-filesystems virt-resize virt-customize qemu-img jq; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool"; exit 1; }
 done
@@ -30,6 +33,9 @@ qemu-img create -f qcow2 "$work/ubuntu.img" "$target"
 export LIBGUESTFS_BACKEND=direct
 # Software virtualization also works on builders without nested KVM.
 export LIBGUESTFS_BACKEND_SETTINGS=force_tcg
+echo 'Checking guest networking before resizing or downloading gaming images'
+virt-customize --dry-run -a "$work/base.img" --network --memsize 1024 \
+  --run-command 'getent ahostsv4 github.com >/dev/null'
 rootfs=$(virt-filesystems -a "$work/base.img" --filesystems --long | awk '$3 == "ext4" {print $1}')
 [[ "$rootfs" =~ ^/dev/sd[a-z][0-9]+$ ]] || { echo 'Expected one Ubuntu ext4 root partition'; exit 1; }
 if (( target > size )); then
@@ -37,6 +43,7 @@ if (( target > size )); then
 else
   qemu-img convert -O qcow2 "$work/base.img" "$work/ubuntu.img"
 fi
+rm -f "$work/base.img"
 for pair in 'wolf stable' 'lutris edge'; do
   read -r name tag <<<"$pair"
   docker pull "ghcr.io/games-on-whales/$name:$tag"
