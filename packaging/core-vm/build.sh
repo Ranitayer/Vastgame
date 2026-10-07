@@ -8,6 +8,12 @@ cd "$(dirname "$0")/../.."
 for tool in docker virt-filesystems virt-resize virt-customize qemu-img jq; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool"; exit 1; }
 done
+# Some distributions package the appliance DHCP client as an optional dependency.
+if [[ -f /usr/lib/guestfs/supermin.d/packages ]] &&
+   grep -qx dhcpcd /usr/lib/guestfs/supermin.d/packages &&
+   ! command -v dhcpcd >/dev/null && ! command -v dhclient >/dev/null; then
+  echo 'Missing appliance DHCP client: install dhcpcd before building'; exit 1
+fi
 : "${GITHUB_SHA:?Build requires a source commit ID}"
 : "${CORE_IMAGE:?Set the destination image repository}"
 [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
