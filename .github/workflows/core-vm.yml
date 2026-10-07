@@ -34,6 +34,10 @@ jobs:
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker push "ghcr.io/ranitayer/vastgame-core:build-${GITHUB_SHA}"
+          digest=$(docker image inspect "ghcr.io/ranitayer/vastgame-core:build-${GITHUB_SHA}" --format '{{index .RepoDigests 0}}')
+          [[ "$digest" =~ @sha256:[0-9a-f]{64}$ ]]
+          jq --arg digest "$digest" '.image_digest=$digest' build/core-vm-receipt.json > build/core-vm-receipt.tmp
+          mv build/core-vm-receipt.tmp build/core-vm-receipt.json
           docker logout ghcr.io
       - uses: actions/upload-artifact@v4
         with:
