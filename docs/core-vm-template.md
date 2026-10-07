@@ -91,7 +91,11 @@ will then need registry pull authentication for the eventual test template.
 
 `packaging/core-vm/build.sh` extracts the official wrapper's Ubuntu guest disk,
 grows its root filesystem, and installs dependencies *inside that disk* using
-libguestfs. It inherits the official supervisor unchanged. The official base and
+libguestfs. It preserves the official supervisor, entrypoint, environment and working directory.
+The final wrapper is flattened so the overwritten original guest disk is not
+also downloaded as a hidden parent layer. Wrapper configuration is compared before
+publication. An existing prepared image can be flattened by supplying its full
+registry digest in the workflow, without repeating runtime installation. The official base and
 Wolf/Lutris images are resolved to content digests and recorded in the build
 receipt; a new manual build can resolve newer upstream digests. The resulting
 published image must be selected by its registry digest for a live test, not by

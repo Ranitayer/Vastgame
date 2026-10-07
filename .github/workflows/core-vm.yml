@@ -1,6 +1,11 @@
 name: Build experimental Vastgame Core VM
 on:
   workflow_dispatch:
+    inputs:
+      prepared_image:
+        description: 'Optional: flatten an already built Core image by its ghcr.io/ranitayer/vastgame-core@sha256 digest'
+        required: false
+        default: ''
 permissions:
   contents: read
   packages: write
@@ -21,13 +26,29 @@ jobs:
           available=$(df --output=avail -B1 / | tail -n1)
           test "$available" -ge 42949672960 || { echo 'At least 40 GiB free is required for the guest image build'; exit 1; }
       - name: Install guest-disk build tools
+        if: inputs.prepared_image == ''
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils jq
+      - name: Authenticate package access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Build the VM disk and wrapper image
         env:
           CORE_IMAGE: ghcr.io/ranitayer/vastgame-core
-        run: sudo --preserve-env=CORE_IMAGE,GITHUB_SHA,RUNNER_TEMP bash packaging/core-vm/build.sh
+          PREPARED_IMAGE: ${{ inputs.prepared_image }}
+        run: |
+          if [[ -n "$PREPARED_IMAGE" ]]; then
+            [[ "$PREPARED_IMAGE" =~ ^ghcr.io/ranitayer/vastgame-core@sha256:[0-9a-f]{64}$ ]]
+            docker pull "$PREPARED_IMAGE"
+            python3 packaging/core-vm/flatten.py "$PREPARED_IMAGE" "$CORE_IMAGE:build-$GITHUB_SHA"
+            mkdir -p build
+            jq -n --arg source "$PREPARED_IMAGE" --arg commit "$GITHUB_SHA" --arg image "$CORE_IMAGE:build-$GITHUB_SHA" \
+              '{prepared_source:$source,source_commit:$commit,image:$image,live_validated:false}' > build/core-vm-receipt.json
+          else
+            sudo --preserve-env=CORE_IMAGE,GITHUB_SHA,RUNNER_TEMP bash packaging/core-vm/build.sh
+          fi
       - name: Publish experimental image
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

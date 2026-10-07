@@ -62,7 +62,9 @@ virt-customize -a "$work/ubuntu.img" --network --memsize 4096 --smp 2 \
 virt-sysprep -a "$work/ubuntu.img" --operations ssh-hostkeys,ssh-userdir,machine-id,logfiles,tmp-files,bash-history
 cp packaging/core-vm/Dockerfile "$work/Dockerfile"
 printf '%s\n' '*' '!Dockerfile' '!ubuntu.img' > "$work/.dockerignore"
-docker build --build-arg "BASE_IMAGE=$base" -t "$CORE_IMAGE:build-$GITHUB_SHA" "$work"
+docker build --build-arg "BASE_IMAGE=$base" -t "vastgame-core-unsquashed:$GITHUB_SHA" "$work"
+# Drop the overwritten original guest disk from the distributed image layers.
+python3 packaging/core-vm/flatten.py "vastgame-core-unsquashed:$GITHUB_SHA" "$CORE_IMAGE:build-$GITHUB_SHA"
 mkdir -p build
 jq -n --arg base "$base" --arg commit "$GITHUB_SHA" --arg image "$CORE_IMAGE:build-$GITHUB_SHA" \
   --arg wolf "$(cat "$work/wolf.image")" --arg lutris "$(cat "$work/lutris.image")" \

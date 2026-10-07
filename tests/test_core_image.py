@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import sys
 from pathlib import Path
 import subprocess
@@ -41,3 +42,18 @@ class CoreImageTests(unittest.TestCase):
     def test_no_prebuilt_seed_preserves_existing_preparation(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(prepare_game.runtime_seed_environment({'id':'fixture'},Path(tmp)),{})
+
+
+class WrapperFlattenTests(unittest.TestCase):
+    def test_launch_configuration_is_preserved_in_import_options(self):
+        spec=importlib.util.spec_from_file_location('flatten_core',ROOT/'packaging/core-vm/flatten.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        config={'Env':['PATH=/usr/local/cuda/bin:/usr/bin','NVIDIA_VISIBLE_DEVICES=all'],
+                'Entrypoint':['/root/kaalia-vm-supervisor'],'Cmd':None,'WorkingDir':'/root',
+                'Labels':{'fixture':'hello world'}}
+        options=module.changes(config)
+        self.assertIn('ENTRYPOINT ["/root/kaalia-vm-supervisor"]',options)
+        self.assertIn('WORKDIR "/root"',options)
+        self.assertIn('ENV NVIDIA_VISIBLE_DEVICES="all"',options)
+        with self.assertRaisesRegex(ValueError,'hooks/volumes'):
+            module.changes(dict(config,Volumes={'/data':{}}))
