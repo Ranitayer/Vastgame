@@ -24,13 +24,19 @@ docker cp "$container:/root/images/ubuntu.img" "$work/base.img"
 docker rm "$container" >/dev/null; container=''
 # Grow the actual guest filesystem, not merely the outer Docker filesystem.
 size=$(qemu-img info --output=json "$work/base.img" | jq -r '."virtual-size"')
-qemu-img create -f qcow2 "$work/ubuntu.img" "$((size + 24 * 1024 * 1024 * 1024))"
+target=$((32 * 1024 * 1024 * 1024))
+(( size > target )) && target=$size
+qemu-img create -f qcow2 "$work/ubuntu.img" "$target"
 export LIBGUESTFS_BACKEND=direct
 # Software virtualization also works on builders without nested KVM.
 export LIBGUESTFS_BACKEND_SETTINGS=force_tcg
 rootfs=$(virt-filesystems -a "$work/base.img" --filesystems --long | awk '$3 == "ext4" {print $1}')
 [[ "$rootfs" =~ ^/dev/sd[a-z][0-9]+$ ]] || { echo 'Expected one Ubuntu ext4 root partition'; exit 1; }
-virt-resize --expand "$rootfs" "$work/base.img" "$work/ubuntu.img"
+if (( target > size )); then
+  virt-resize --expand "$rootfs" "$work/base.img" "$work/ubuntu.img"
+else
+  qemu-img convert -O qcow2 "$work/base.img" "$work/ubuntu.img"
+fi
 for pair in 'wolf stable' 'lutris edge'; do
   read -r name tag <<<"$pair"
   docker pull "ghcr.io/games-on-whales/$name:$tag"
@@ -44,7 +50,7 @@ cp -a src/runtime "$work/runtime"
 # Reuse the launcher’s preparation Dockerfile exactly, including its EOL mirror guard.
 sed -n '/^FROM ghcr.io\/games-on-whales\/lutris:edge$/,/^PREPARATION_IMAGE$/p' src/bootstrap/start.sh | sed '$d' > "$work/preparation.Dockerfile"
 test -s "$work/preparation.Dockerfile"
-virt-customize -a "$work/ubuntu.img" --network --memsize 8192 --smp 4 \
+virt-customize -a "$work/ubuntu.img" --network --memsize 4096 --smp 2 \
   --mkdir /opt/vastgame-build \
   --copy-in "$work/core-vm.sh:/opt/vastgame-build" \
   --copy-in "$work/preparation.Dockerfile:/opt/vastgame-build" \
