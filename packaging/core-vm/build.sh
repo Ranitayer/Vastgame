@@ -44,8 +44,12 @@ target=$((32 * 1024 * 1024 * 1024))
 (( size > target )) && target=$size
 qemu-img create -f qcow2 "$work/ubuntu.img" "$target"
 export LIBGUESTFS_BACKEND=direct
-# Software virtualization also works on builders without nested KVM.
-export LIBGUESTFS_BACKEND_SETTINGS=force_tcg
+# Prefer hardware acceleration locally; CI also supports software-only builders.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  export LIBGUESTFS_BACKEND_SETTINGS=force_kvm
+else
+  export LIBGUESTFS_BACKEND_SETTINGS=force_tcg
+fi
 echo 'Checking guest networking before resizing or downloading gaming images'
 virt-customize --dry-run -a "$work/base.img" --network --memsize 1024 \
   --run-command 'getent ahostsv4 github.com >/dev/null'
