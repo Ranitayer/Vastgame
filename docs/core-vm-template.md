@@ -102,6 +102,10 @@ published image must be selected by its registry digest for a live test, not by
 a mutable tag. The receipt records the exact source commit and package inventory
 is embedded at `/usr/share/vastgame/core-packages.txt`.
 
+Container preparation runs after a local boot of the real guest kernel and systemd.
+Temporary SSH access listens only on localhost; its keys, cloud-init override and
+network settings are removed before publication.
+
 The guest caches Wolf/Lutris and the preparation image in Docker's overlay2 store.
 It runs the existing Lutris preparation path with a disposable `cmd.exe` probe to
 warm UMU, GE-Proton, Steam Runtime, DXVK and VKD3D. A build fails if that preparation

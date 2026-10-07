@@ -16,13 +16,15 @@ class CoreImageTests(unittest.TestCase):
         guest=(ROOT/'packaging/core-vm/guest.sh').read_text()
         self.assertIn('install_core_dependencies',guest)
         self.assertNotIn('prepare_core_vm',guest)
-        self.assertIn('/opt/vastgame/prepare-game.sh',guest)
-        self.assertIn("seed/'share/pga.db'",guest)
-        self.assertIn('cleanup\ntrap - EXIT',guest)
+        warm=(ROOT/'packaging/core-vm/warm.sh').read_text()
+        self.assertIn('/opt/vastgame/prepare-game.sh',warm)
+        self.assertIn("seed/'share/pga.db'",warm)
+        self.assertNotIn('dockerd --',guest)
+        self.assertIn('systemctl is-active --quiet docker',warm)
         dockerfile=(ROOT/'packaging/core-vm/Dockerfile').read_text()
         self.assertIn('COPY ubuntu.img /root/images/ubuntu.img',dockerfile)
         self.assertNotIn('ENTRYPOINT',dockerfile)
-        for file in ['build.sh','guest.sh']:
+        for file in ['build.sh','guest.sh','warm.sh']:
             subprocess.run(['bash','-n',str(ROOT/'packaging/core-vm'/file)],check=True)
 
     def test_prebuilt_runner_is_validated_and_custom_runners_are_preserved(self):

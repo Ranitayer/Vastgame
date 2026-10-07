@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 # libguestfs is root inside its appliance; the host process must remain unprivileged.
 # passt drops host-root privileges and cannot access root-private socket directories.
 [[ $(id -u) != 0 ]] || { echo 'Run the image builder without sudo; guest installation still runs as guest root'; exit 1; }
-for tool in docker virt-filesystems virt-resize virt-customize qemu-img jq; do
+for tool in docker virt-filesystems virt-resize virt-customize qemu-img qemu-system-x86_64 ssh ssh-keygen jq; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool"; exit 1; }
 done
 # Some distributions package the appliance DHCP client as an optional dependency.
@@ -32,7 +32,12 @@ socket_dir=$(mktemp -d /tmp/vastgame-guestfs-sockets.XXXXXX)
 # passt sockets and PID files. Scope the override to this builder process.
 export XDG_RUNTIME_DIR="$socket_dir"
 container=''
+guest_pid=''
 cleanup() {
+  if [[ -n "$guest_pid" ]]; then
+    kill "$guest_pid" 2>/dev/null || true
+    wait "$guest_pid" 2>/dev/null || true
+  fi
   [[ -z "$container" ]] || docker rm "$container" >/dev/null 2>&1 || true
   rm -rf -- "$work" "$socket_dir"
 }
@@ -76,6 +81,7 @@ for pair in 'wolf stable' 'lutris edge'; do
 done
 cp src/bootstrap/core-vm.sh "$work/core-vm.sh"
 cp packaging/core-vm/guest.sh "$work/guest.sh"
+cp packaging/core-vm/warm.sh "$work/warm.sh"
 cp -a src/runtime "$work/runtime"
 # Reuse the launcher’s preparation Dockerfile exactly, including its EOL mirror guard.
 sed -n '/^FROM ghcr.io\/games-on-whales\/lutris:edge$/,/^PREPARATION_IMAGE$/p' src/bootstrap/start.sh | sed '$d' > "$work/preparation.Dockerfile"
@@ -83,12 +89,45 @@ test -s "$work/preparation.Dockerfile"
 virt-customize -a "$work/ubuntu.img" --network --memsize 4096 --smp 2 \
   --mkdir /opt/vastgame-build \
   --copy-in "$work/guest.sh:/opt/vastgame-build" \
+  --copy-in "$work/warm.sh:/opt/vastgame-build" \
   --copy-in "$work/core-vm.sh:/opt/vastgame-build" \
   --copy-in "$work/preparation.Dockerfile:/opt/vastgame-build" \
   --copy-in "$work/runtime:/opt/vastgame-build" \
   --copy-in "$work/wolf.image:/opt/vastgame-build" \
   --copy-in "$work/lutris.image:/opt/vastgame-build" \
   --run-command 'bash /opt/vastgame-build/guest.sh'
+# Container preparation needs the guest's own systemd/cgroups, not an appliance
+# chroot. Use a localhost-only temporary SSH key and remove all build identity.
+ssh-keygen -q -t ed25519 -N '' -f "$work/build-key"
+virt-customize -a "$work/ubuntu.img" --ssh-inject "root:file:$work/build-key.pub" \
+  --run-command 'touch /etc/cloud/cloud-init.disabled; mkdir -p /etc/ssh/sshd_config.d; printf "PermitRootLogin prohibit-password\n" > /etc/ssh/sshd_config.d/99-vastgame-build.conf; printf "network:\n  version: 2\n  ethernets:\n    buildnic:\n      match:\n        macaddress: 52:54:00:12:34:56\n      dhcp4: true\n" > /etc/netplan/99-vastgame-build.yaml; chmod 600 /etc/netplan/99-vastgame-build.yaml'
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+accel=tcg; cpu=max
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then accel=kvm; cpu=host; fi
+qemu-system-x86_64 -accel "$accel" -cpu "$cpu" -m 4096 -smp 2 \
+  -drive "file=$work/ubuntu.img,format=qcow2,if=virtio" \
+  -netdev "user,id=buildnet,hostfwd=tcp:127.0.0.1:$port-:22" \
+  -device virtio-net-pci,netdev=buildnet,mac=52:54:00:12:34:56 \
+  -display none -serial "file:$work/guest-boot.log" -monitor none > "$work/qemu.log" 2>&1 &
+guest_pid=$!
+ssh_args=(-i "$work/build-key" -p "$port" -o BatchMode=yes -o ConnectTimeout=3 \
+          -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known-hosts")
+echo 'Booting the local guest to prepare Docker and Proton'
+ready=0
+for attempt in {1..120}; do
+  kill -0 "$guest_pid" 2>/dev/null || { cat "$work/qemu.log" "$work/guest-boot.log"; exit 1; }
+  if ssh "${ssh_args[@]}" root@127.0.0.1 true 2>/dev/null; then ready=1; break; fi
+  sleep 3
+done
+[[ "$ready" = 1 ]] || { cat "$work/qemu.log" "$work/guest-boot.log"; echo 'Local guest SSH did not become ready'; exit 1; }
+ssh "${ssh_args[@]}" root@127.0.0.1 'bash /opt/vastgame-build/warm.sh'
+ssh "${ssh_args[@]}" root@127.0.0.1 'rm -f /etc/cloud/cloud-init.disabled /etc/netplan/99-vastgame-build.yaml /etc/ssh/sshd_config.d/99-vastgame-build.conf; sync; systemctl poweroff'
+for attempt in {1..60}; do
+  kill -0 "$guest_pid" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "$guest_pid" 2>/dev/null; then echo 'Guest did not shut down cleanly; image will not be published'; exit 1; fi
+wait "$guest_pid"; guest_pid=''
 # No client identity, SSH keys, tailnet membership or game state is shipped.
 virt-sysprep -a "$work/ubuntu.img" --operations ssh-hostkeys,ssh-userdir,machine-id,logfiles,tmp-files,bash-history
 cp packaging/core-vm/Dockerfile "$work/Dockerfile"
