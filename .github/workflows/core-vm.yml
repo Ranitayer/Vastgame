@@ -48,8 +48,24 @@ jobs:
           export SUPERMIN_MODULES="/lib/modules/${kernel##*/vmlinuz-}"
           test -d "$SUPERMIN_MODULES"
           printf 'SUPERMIN_KERNEL=%s\nSUPERMIN_MODULES=%s\n' "$SUPERMIN_KERNEL" "$SUPERMIN_MODULES" >> "$GITHUB_ENV"
-          timeout 180 guestfish --network -N "$RUNNER_TEMP/guestfs-network-probe.img=disk:16M" ping-daemon
+          # Noble's passt policy permits /tmp, but not libguestfs's default
+          # runtime directory. Keep its sockets there without weakening AppArmor.
+          export LIBGUESTFS_TMPDIR=$(mktemp -d /tmp/vastgame-guestfs.XXXXXX)
+          printf 'LIBGUESTFS_TMPDIR=%s\n' "$LIBGUESTFS_TMPDIR" >> "$GITHUB_ENV"
+          mkdir -p build
+          if ! timeout 180 guestfish -v --network -N "$RUNNER_TEMP/guestfs-network-probe.img=disk:16M" ping-daemon > build/guest-network.log 2>&1; then
+            cat build/guest-network.log
+            sudo journalctl -k --no-pager | rg 'apparmor="DENIED".*passt' || true
+            exit 1
+          fi
           rm -f "$RUNNER_TEMP/guestfs-network-probe.img"
+      - name: Upload guest networking diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-network-diagnostics
+          path: build/guest-network.log
+          if-no-files-found: ignore
       - name: Authenticate package access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
