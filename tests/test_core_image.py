@@ -53,6 +53,7 @@ class CoreImageTests(unittest.TestCase):
         self.assertIn('export XDG_RUNTIME_DIR="$LIBGUESTFS_TMPDIR"',workflow)
         self.assertIn('$PWD/build/core-vm-work',build)
         self.assertIn('shutil.disk_usage',build)
+        self.assertIn("--run-command 'bash /opt/vastgame-build/guest.sh'",build)
         self.assertLess(build.index('virt-customize --dry-run'),build.index('virt-resize --expand'))
         self.assertLess(build.index('virt-customize --dry-run'),build.index("for pair in 'wolf stable'"))
 

@@ -82,12 +82,13 @@ sed -n '/^FROM ghcr.io\/games-on-whales\/lutris:edge$/,/^PREPARATION_IMAGE$/p' s
 test -s "$work/preparation.Dockerfile"
 virt-customize -a "$work/ubuntu.img" --network --memsize 4096 --smp 2 \
   --mkdir /opt/vastgame-build \
+  --copy-in "$work/guest.sh:/opt/vastgame-build" \
   --copy-in "$work/core-vm.sh:/opt/vastgame-build" \
   --copy-in "$work/preparation.Dockerfile:/opt/vastgame-build" \
   --copy-in "$work/runtime:/opt/vastgame-build" \
   --copy-in "$work/wolf.image:/opt/vastgame-build" \
   --copy-in "$work/lutris.image:/opt/vastgame-build" \
-  --run "$work/guest.sh"
+  --run-command 'bash /opt/vastgame-build/guest.sh'
 # No client identity, SSH keys, tailnet membership or game state is shipped.
 virt-sysprep -a "$work/ubuntu.img" --operations ssh-hostkeys,ssh-userdir,machine-id,logfiles,tmp-files,bash-history
 cp packaging/core-vm/Dockerfile "$work/Dockerfile"
