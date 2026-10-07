@@ -106,7 +106,7 @@ Container preparation runs after a local boot of the real guest kernel and syste
 Temporary SSH access listens only on localhost; its keys, cloud-init override and
 network settings are removed before publication.
 
-The guest caches Wolf/Lutris and the preparation image in Docker's overlay2 store.
+The guest caches Wolf/Lutris and the preparation image in Docker's image store.
 It runs the existing Lutris preparation path with a disposable `cmd.exe` probe to
 warm UMU, GE-Proton, Steam Runtime, DXVK and VKD3D. A build fails if that preparation
 fails or does not resolve an installed Proton executable. The test prefix, Lutris
@@ -120,12 +120,13 @@ Custom Wine runners bypass the GE-Proton seed. Each real game still gets its own
 prefix, state restore, graphics checks and readiness validation. Game files,
 Wolf identity and the small generic core archive still restore separately.
 
-**Acceptance is pending a successful image build and fresh Vast launch.**
+**The first image was built locally, boot-tested and uploaded on 2026-10-07.
+Fresh Vast GPU/streaming acceptance is still pending.**
 A successful CI build validates the guest filesystem and runtime preparation, not
 Vast's host-specific KVM launch protocol, GPU passthrough, encoding or gameplay.
 The working official-image template remains selected until those checks succeed.
-Software virtualization is used during disk preparation so a builder does not
-need a physical GPU; the final wrapper still uses Vast's KVM launcher.
+Hardware virtualization is used when available, with software virtualization
+for builders without KVM. A build does not need a physical GPU; the final wrapper still uses Vast's KVM launcher.
 
 ### Local image builds
 
@@ -145,3 +146,18 @@ Upload the resulting `build-<commit>` image to GHCR using an account authorized
 to write that package. Record its registry digest in the build receipt.
 Publishing is not live acceptance: test the resulting image on Vast before
 selecting it as the default.
+
+### Published experimental image
+
+The verified first build is pinned to:
+
+```text
+ghcr.io/ranitayer/vastgame-core@sha256:1224b1502d72be0fb082eceb6e762f600621d306032f137adc730a69731d1962
+```
+
+Its single compressed layer is 8,613,022,221 bytes (about 8.6 GB). Local boot,
+Docker, GE-Proton11-7, Steam Runtime, DXVK/VKD3D and temporary-identity cleanup
+were checked. The package remains private and requires registry pull credentials.
+The existing Vast template is unchanged; this image has not yet passed a fresh
+Vast GPU/encoding/gameplay test. The immutable digest and validation receipt are
+attached to the `core-vm-527850c` experimental GitHub release.

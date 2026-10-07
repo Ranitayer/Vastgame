@@ -31,6 +31,11 @@ socket_dir=$(mktemp -d /tmp/vastgame-guestfs-sockets.XXXXXX)
 # libguestfs uses XDG_RUNTIME_DIR, independently of LIBGUESTFS_TMPDIR, for
 # passt sockets and PID files. Scope the override to this builder process.
 export XDG_RUNTIME_DIR="$socket_dir"
+# An optional DHCP package installed after an earlier probe can leave a stale
+# system appliance cache. Each build gets a fresh cache unless explicitly supplied.
+: "${LIBGUESTFS_CACHEDIR:=$work/appliance-cache}"
+mkdir -p "$LIBGUESTFS_CACHEDIR"
+export LIBGUESTFS_CACHEDIR
 container=''
 guest_pid=''
 cleanup() {
