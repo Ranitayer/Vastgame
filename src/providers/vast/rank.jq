@@ -1,0 +1,418 @@
+# --------------------------------------------------------
+    # Absolute GPU gaming score: 0..40
+    #
+    # Model ordering is tuned for modern 1440p/1600p gaming.
+    # total_flops is ONLY a fallback for an unknown future GPU.
+    # --------------------------------------------------------
+
+    def gpu_pts:
+
+        ((.gpu_name // "")
+            | ascii_upcase
+            | gsub("[_-]"; " ")
+        ) as $g
+
+        |
+
+        if   ($g | test("RTX 5090")) then 40.0
+        elif ($g | test("RTX 4090")) then 39.0
+        elif ($g | test("RTX 5080")) then 37.0
+
+        elif ($g | test("RTX 4080 ?(SUPER|S)")) then 35.0
+        elif ($g | test("RTX 4080")) then 34.5
+
+        elif ($g | test("RTX 5070 TI")) then 34.0
+        elif ($g | test("RTX 4070 TI ?(SUPER|S)")) then 31.0
+
+        elif ($g | test("RTX 3090 TI")) then 30.0
+        elif ($g | test("RTX 4070 TI")) then 29.5
+        elif ($g | test("RTX 5070")) then 29.0
+
+        elif ($g | test("RTX 3090")) then 28.0
+        elif ($g | test("RTX 4070 ?(SUPER|S)")) then 28.0
+        elif ($g | test("RTX 3080 TI")) then 27.5
+
+        elif ($g | test("RTX 3080")) then 25.5
+        elif ($g | test("RTX 4070")) then 24.5
+
+        elif ($g | test("RTX 5060 TI")) then 23.0
+        elif ($g | test("RTX 3070 TI")) then 21.5
+        elif ($g | test("RTX 5060")) then 20.5
+        elif ($g | test("RTX 4060 TI")) then 20.5
+        elif ($g | test("RTX 3070")) then 20.0
+
+        elif ($g | test("RTX 3060 TI")) then 18.0
+        elif ($g | test("RTX 4060")) then 17.0
+        elif ($g | test("RTX 3060")) then 15.0
+
+        elif ($g | test("RTX 2080 TI")) then 14.5
+        elif ($g | test("RTX 2080 ?(SUPER|S)")) then 12.5
+        elif ($g | test("RTX 2080")) then 11.5
+        elif ($g | test("RTX 2070 ?(SUPER|S)")) then 10.5
+        elif ($g | test("RTX 2070")) then 9.5
+        elif ($g | test("RTX 2060")) then 8.0
+
+        else
+            (
+                (.total_flops // 0) * 0.55
+            ) as $fallback
+            |
+            if $fallback < 6 then 6
+            elif $fallback > 24 then 24
+            else $fallback
+            end
+        end
+    ;
+
+    # --------------------------------------------------------
+    # Algeria proximity prior: 0..15
+    #
+    # This is deliberately only 15% of the score.
+    # Real local RTT/loss/jitter overrides it after VM creation.
+    # --------------------------------------------------------
+
+    def alg_pts:
+
+        ((.geolocation // "") | ascii_upcase) as $g
+
+        |
+
+        if   ($g | test("(,|_| )ES$")) then 15.0
+        elif ($g | test("(,|_| )FR$")) then 14.5
+        elif ($g | test("(,|_| )IT$")) then 14.0
+
+        elif ($g | test("(,|_| )PT$")) then 13.0
+        elif ($g | test("(,|_| )CH$")) then 12.5
+        elif ($g | test("(,|_| )BE$")) then 11.5
+
+        elif ($g | test("(,|_| )DE$")) then 11.0
+        elif ($g | test("(,|_| )NL$")) then 10.5
+        elif ($g | test("(,|_| )LU$")) then 10.5
+        elif ($g | test("(,|_| )AT$")) then 10.0
+
+        elif ($g | test("(,|_| )GR$")) then 9.5
+        elif ($g | test("(,|_| )SI$")) then 9.5
+        elif ($g | test("(,|_| )HR$")) then 9.0
+        elif ($g | test("(,|_| )GB$")) then 8.5
+
+        elif ($g | test("(,|_| )IE$")) then 8.0
+        elif ($g | test("(,|_| )CZ$")) then 8.0
+        elif ($g | test("(,|_| )HU$")) then 7.5
+        elif ($g | test("(,|_| )SK$")) then 7.5
+        elif ($g | test("(,|_| )RO$")) then 7.0
+
+        elif ($g | test("(,|_| )DK$")) then 7.0
+        elif ($g | test("(,|_| )PL$")) then 6.5
+        elif ($g | test("(,|_| )BG$")) then 6.5
+        elif ($g | test("(,|_| )CY$")) then 6.0
+
+        elif ($g | test("(,|_| )SE$")) then 5.0
+        elif ($g | test("(,|_| )NO$")) then 4.5
+        elif ($g | test("(,|_| )FI$")) then 4.0
+        elif ($g | test("(,|_| )(EE|LV|LT)$")) then 4.0
+        elif ($g | test("(,|_| )IS$")) then 2.5
+
+        else 6.0
+        end
+    ;
+
+    # --------------------------------------------------------
+    # Network/storage: 0..12. Keep the total score scale unchanged.
+    def restore_rate($h):
+        ($h["machine:" + ((.machine_id // "") | tostring)] // {}) as $x |
+        if ($x.restore_mbps // 0) > 0 and (now - ($x.last_restore // 0)) < 604800
+        then $x.restore_mbps
+        else (.inet_down // 0)
+        end
+    ;
+
+    def net_pts($h):
+        (if (.inet_up // 0) >= 500 then 4
+         elif (.inet_up // 0) >= 150 then 3.5
+         elif (.inet_up // 0) >= 75 then 3 else 2 end)
+        +
+        (restore_rate($h) as $down |
+         if $down >= 5000 then 6
+         elif $down >= 2500 then 5.5
+         elif $down >= 1000 then 4.5
+         elif $down >= 500 then 3
+         elif $down >= 250 then 1.8 else 0.6 end)
+        +
+        (if (.disk_bw // 0) >= 1000 then 2
+         elif (.disk_bw // 0) >= 500 then 1.5
+         elif (.disk_bw // 0) >= 250 then 1
+         elif (.disk_bw // 0) > 0 then 0.5 else 0 end)
+    ;
+
+    # --------------------------------------------------------
+    # Reliability: 0..12, intentionally nonlinear.
+    # --------------------------------------------------------
+
+    def rel_pts:
+
+        if   (.reliability // 0) >= 0.999 then 12.0
+        elif (.reliability // 0) >= 0.995 then 11.5
+        elif (.reliability // 0) >= 0.990 then 10.5
+        elif (.reliability // 0) >= 0.985 then 9.5
+        elif (.reliability // 0) >= 0.980 then 8.5
+        elif (.reliability // 0) >= 0.970 then 7.0
+        elif (.reliability // 0) >= 0.950 then 5.0
+        else 1.0
+        end
+    ;
+
+    # --------------------------------------------------------
+    # VRAM: 0..8
+    # --------------------------------------------------------
+
+    def vram_pts:
+
+        ((.gpu_ram // 0) / 1024) as $v
+
+        |
+
+        if   $v >= 24 then 8.0
+        elif $v >= 16 then 7.5
+        elif $v >= 12 then 6.5
+        elif $v >= 10 then 5.5
+        elif $v >= 8  then 4.5
+        elif $v >= 6  then 2.5
+        else 1.0
+        end
+    ;
+
+    # --------------------------------------------------------
+    # CPU/server: 0..6
+    # --------------------------------------------------------
+
+    def cpu_pts:
+
+        (
+            if   (.cpu_cores_effective // 0) >= 16 then 4.0
+            elif (.cpu_cores_effective // 0) >= 12 then 3.6
+            elif (.cpu_cores_effective // 0) >= 8  then 3.1
+            elif (.cpu_cores_effective // 0) >= 6  then 2.6
+            elif (.cpu_cores_effective // 0) >= 4  then 2.0
+            else 0.5
+            end
+        )
+
+        +
+
+        (
+            if   (.cpu_ghz // 0) >= 3.5 then 2.0
+            elif (.cpu_ghz // 0) >= 3.0 then 1.7
+            elif (.cpu_ghz // 0) >= 2.5 then 1.3
+            elif (.cpu_ghz // 0) >= 2.0 then 0.9
+            else 0.4
+            end
+        )
+    ;
+
+    # --------------------------------------------------------
+    # Cost/value: 0..7
+    # Cheap matters, but cannot overwhelm GPU/route quality.
+    # --------------------------------------------------------
+
+    def cost_pts:
+
+        if   (.dph_total // 999) <= 0.15 then 7.0
+        elif (.dph_total // 999) <= 0.20 then 6.5
+        elif (.dph_total // 999) <= 0.25 then 5.5
+        elif (.dph_total // 999) <= 0.30 then 4.5
+        elif (.dph_total // 999) <= 0.35 then 3.5
+        elif (.dph_total // 999) <= 0.40 then 2.5
+        elif (.dph_total // 999) <= 0.50 then 1.5
+        elif (.dph_total // 999) <= 0.60 then 0.8
+        elif (.dph_total // 999) <= 0.70 then 0.3
+        else 0
+        end
+    ;
+
+    # --------------------------------------------------------
+    # Learned route history: -30..+8
+    # machine_id is preferred over country guesses.
+    # --------------------------------------------------------
+
+    def hist_bonus($h):
+
+        ("machine:" + ((.machine_id // "") | tostring)) as $key
+        |
+        ($h[$key] // {}) as $x
+
+        |
+
+        if ($x | length) == 0 then 0
+
+        elif
+            (($x.last_result // "") == "fail")
+            and
+            (($x.failures // 0) >= 2)
+        then -30
+
+        elif (($x.last_result // "") == "fail")
+        then -18
+
+        elif
+            (($x.last_result // "") == "pass")
+            and (($x.avg_rtt_ms // 999) <= 45)
+            and (($x.jitter_ms // 999) <= 5)
+            and (($x.loss_pct // 100) <= 0.2)
+        then 8
+
+        elif
+            (($x.last_result // "") == "pass")
+            and (($x.avg_rtt_ms // 999) <= 60)
+            and (($x.jitter_ms // 999) <= 8)
+            and (($x.loss_pct // 100) <= 0.5)
+        then 6
+
+        elif
+            (($x.last_result // "") == "pass")
+            and (($x.avg_rtt_ms // 999) <= 80)
+            and (($x.jitter_ms // 999) <= 15)
+            and (($x.loss_pct // 100) <= 1)
+        then 3
+
+        else 0
+        end
+    ;
+
+    def performance_bonus($h):
+        ($h["machine:" + ((.machine_id // "") | tostring)].performance // {}) as $p
+        | if ($p.samples // 0) < 30 or ($p.updated // 0) < (now - 604800) then 0
+          else
+            (if ($p.delivery_score // 0) >= 95 then 4
+             elif ($p.delivery_score // 0) >= 80 then 2
+             elif ($p.delivery_score // 100) < 40 then -8
+             elif ($p.delivery_score // 100) < 65 then -4 else 0 end)
+            +
+            (if $p.game_id != $selected_game or $p.resolution != $native_resolution or $p.target_fps != $native_fps then 0
+             elif ($p.game_delivery_score // 0) >= 95 then 2
+             elif ($p.game_delivery_score // 100) < 60 then -4 else 0 end)
+          end
+    ;
+
+    def tier($s):
+        if   $s >= 93 then "S+"
+        elif $s >= 87 then "S"
+        elif $s >= 80 then "A"
+        elif $s >= 72 then "B"
+        elif $s >= 64 then "C"
+        else "D"
+        end
+    ;
+
+    def r1:
+        ((. * 10) | round) / 10
+    ;
+
+    ($hist[0] // {}) as $history
+
+    |
+
+    map(
+        select(
+            (.dph_total // 999) <= $cap
+            and
+            (.vms_enabled // false) == true
+            and
+            (.cpu_cores_effective // 0) >= 4
+            and
+            (.gpu_ram // 0) >= 6144
+        )
+    )
+
+    |
+
+    # Keep every NVIDIA family, including workstation/datacenter models.
+    # Older responses may omit gpu_arch; recognize their NVIDIA model names.
+    map(select(
+        if (.gpu_arch // "") != "" then
+            (.gpu_arch | ascii_downcase) == "nvidia"
+        else
+            (.gpu_name // "") | test(
+                "NVIDIA|GeForce|RTX|GTX|Quadro|Tesla|Titan|^[ABHKLPTV][0-9]+([ _-]|$)"; "i"
+            )
+        end
+    ))
+
+    |
+
+    map(
+        gpu_pts as $gpu
+        |
+        alg_pts as $alg
+        |
+        net_pts($history) as $net
+        |
+        rel_pts as $rel
+        |
+        vram_pts as $vram
+        |
+        cpu_pts as $cpu
+        |
+        cost_pts as $cost
+        |
+        (hist_bonus($history) + performance_bonus($history)) as $hist
+
+        |
+
+        (
+            $gpu
+            + $alg
+            + $net
+            + $rel
+            + $vram
+            + $cpu
+            + $cost
+            + $hist
+        ) as $raw
+
+        |
+
+        (
+            if $raw > 100 then 100
+            elif $raw < 0 then 0
+            else $raw
+            end
+        ) as $score
+
+        |
+
+        . + {
+            _vg: {
+                score: ($score | r1),
+                tier: tier($score),
+
+                gpu: ($gpu | r1),
+                alg: ($alg | r1),
+                net: ($net | r1),
+                restore_mbps: restore_rate($history),
+                rel: ($rel | r1),
+                vram: ($vram | r1),
+                cpu: ($cpu | r1),
+                cost: ($cost | r1),
+                hist: ($hist | r1)
+            }
+        }
+    )
+
+    |
+
+    sort_by(
+        [
+            -._vg.score,
+            -._vg.gpu,
+            -._vg.alg,
+            -._vg.rel,
+            -._vg.restore_mbps,
+            -(.disk_bw // 0),
+            -(.inet_up // 0),
+            (.dph_total // 999)
+        ]
+    )
+
+    |
+
+    .[:$max]

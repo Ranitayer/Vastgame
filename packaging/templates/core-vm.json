@@ -1,0 +1,9 @@
+{
+  "name": "Vastgame Core VM",
+  "image": "docker.io/vastai/kvm",
+  "image_tag": "ubuntu_cli_22.04-2025-11-21",
+  "disk_space": 50,
+  "search_params": "vms_enabled=true num_gpus=1 verified=any gpu_arch=nvidia gpu_ram>=6",
+  "desc": "Headless Ubuntu 22.04 VM for Vastgame. Wolf/Lutris, verified per-game persistence, Proton preparation and client-native streaming. Launch through the Vastgame CLI; game disk size is selected dynamically.",
+  "profile": "core-v1"
+}

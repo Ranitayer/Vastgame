@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# Resolve the installed symlink so this checkout remains the single source.
+APP_ROOT="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)"
+source "$APP_ROOT/src/manager/common.sh"
+source "$APP_ROOT/src/manager/history.sh"
+source "$APP_ROOT/src/manager/provider.sh"
+source "$APP_ROOT/src/manager/network.sh"
+source "$APP_ROOT/src/manager/progress.sh"
+source "$APP_ROOT/src/manager/client.sh"
+source "$APP_ROOT/src/manager/readiness.sh"
+source "$APP_ROOT/src/manager/persistence.sh"
+source "$APP_ROOT/src/manager/catalog.sh"
+source "$APP_ROOT/src/manager/publication.sh"
+# Help works without Vast, Tailscale, or a configured account.
+case "${1:-}" in help|-h|--help) ;; *) check_dependencies ;; esac
+source "$APP_ROOT/src/manager/commands.sh"
