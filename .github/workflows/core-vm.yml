@@ -52,10 +52,12 @@ jobs:
           # runtime directory. Keep its sockets there without weakening AppArmor.
           export LIBGUESTFS_TMPDIR=$(mktemp -d /tmp/vastgame-guestfs.XXXXXX)
           printf 'LIBGUESTFS_TMPDIR=%s\n' "$LIBGUESTFS_TMPDIR" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$LIBGUESTFS_TMPDIR"
+          printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
           mkdir -p build
           if ! timeout 180 guestfish -v --network -N "$RUNNER_TEMP/guestfs-network-probe.img=disk:16M" ping-daemon > build/guest-network.log 2>&1; then
             cat build/guest-network.log
-            sudo journalctl -k --no-pager | rg 'apparmor="DENIED".*passt' || true
+            sudo journalctl -k --no-pager | grep -E 'apparmor="DENIED".*passt' || true
             exit 1
           fi
           rm -f "$RUNNER_TEMP/guestfs-network-probe.img"

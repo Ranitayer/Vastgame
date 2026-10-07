@@ -11,11 +11,24 @@ done
 : "${GITHUB_SHA:?Build requires a source commit ID}"
 : "${CORE_IMAGE:?Set the destination image repository}"
 [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/vastgame-core.XXXXXX")
+# Guest images must live on disk, not a small RAM-backed /tmp on desktops.
+: "${RUNNER_TEMP:=$PWD/build/core-vm-work}"
+mkdir -p "$RUNNER_TEMP"
+python3 - "$RUNNER_TEMP" <<'PYSPACE'
+import shutil, sys
+if shutil.disk_usage(sys.argv[1]).free < 40 * 1024**3:
+    raise SystemExit('Core VM build needs at least 40 GiB free in RUNNER_TEMP')
+PYSPACE
+docker info >/dev/null
+work=$(mktemp -d "$RUNNER_TEMP/vastgame-core.XXXXXX")
+socket_dir=$(mktemp -d /tmp/vastgame-guestfs-sockets.XXXXXX)
+# libguestfs uses XDG_RUNTIME_DIR, independently of LIBGUESTFS_TMPDIR, for
+# passt sockets and PID files. Scope the override to this builder process.
+export XDG_RUNTIME_DIR="$socket_dir"
 container=''
 cleanup() {
   [[ -z "$container" ]] || docker rm "$container" >/dev/null 2>&1 || true
-  rm -rf -- "$work"
+  rm -rf -- "$work" "$socket_dir"
 }
 trap cleanup EXIT
 base_tag=docker.io/vastai/kvm:ubuntu_cli_22.04-2025-11-21

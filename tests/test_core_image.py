@@ -49,6 +49,10 @@ class CoreImageTests(unittest.TestCase):
         self.assertIn('build/guest-network.log',workflow)
         build=(ROOT/'packaging/core-vm/build.sh').read_text()
         self.assertIn('[[ $(id -u) != 0 ]]',build)
+        self.assertIn('export XDG_RUNTIME_DIR="$socket_dir"',build)
+        self.assertIn('export XDG_RUNTIME_DIR="$LIBGUESTFS_TMPDIR"',workflow)
+        self.assertIn('$PWD/build/core-vm-work',build)
+        self.assertIn('shutil.disk_usage',build)
         self.assertLess(build.index('virt-customize --dry-run'),build.index('virt-resize --expand'))
         self.assertLess(build.index('virt-customize --dry-run'),build.index("for pair in 'wolf stable'"))
 

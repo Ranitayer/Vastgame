@@ -122,3 +122,22 @@ Vast's host-specific KVM launch protocol, GPU passthrough, encoding or gameplay.
 The working official-image template remains selected until those checks succeed.
 Software virtualization is used during disk preparation so a builder does not
 need a physical GPU; the final wrapper still uses Vast's KVM launcher.
+
+### Local image builds
+
+The same builder can run on an x86_64 Linux workstation with Docker,
+libguestfs tools, QEMU, jq and Python installed. Run it as an ordinary user
+with access to Docker. It defaults to disk-backed `build/core-vm-work`,
+requires 40 GiB free, and places guest networking sockets in a private `/tmp`
+directory for the duration of the build. It does not change the desktop's
+runtime directory or disable AppArmor.
+
+```bash
+CORE_IMAGE=ghcr.io/ranitayer/vastgame-core \
+GITHUB_SHA=$(git rev-parse HEAD) bash packaging/core-vm/build.sh
+```
+
+Upload the resulting `build-<commit>` image to GHCR using an account authorized
+to write that package. Record its registry digest in the build receipt.
+Publishing is not live acceptance: test the resulting image on Vast before
+selecting it as the default.
