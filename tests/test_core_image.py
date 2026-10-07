@@ -15,6 +15,7 @@ class CoreImageTests(unittest.TestCase):
     def test_guest_preparation_uses_dependency_installer_not_live_gpu_preflight(self):
         guest=(ROOT/'packaging/core-vm/guest.sh').read_text()
         self.assertIn('install_core_dependencies',guest)
+        self.assertIn('grub-install --target=i386-pc /dev/sda',guest)
         self.assertNotIn('prepare_core_vm',guest)
         warm=(ROOT/'packaging/core-vm/warm.sh').read_text()
         self.assertIn('/opt/vastgame/prepare-game.sh',warm)

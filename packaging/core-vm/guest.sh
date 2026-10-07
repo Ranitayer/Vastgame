@@ -2,6 +2,9 @@
 # Executed inside the Ubuntu guest disk by virt-customize, never on a user's VM.
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
+# virt-resize moves the root partition; refresh the official BIOS bootloader.
+grub-install --target=i386-pc /dev/sda
+update-grub
 source /opt/vastgame-build/core-vm.sh
 install_core_dependencies
 # Install generic network clients at build time; never authenticate either one.
