@@ -150,19 +150,29 @@ selecting it as the default.
 
 ### Published experimental image
 
-The verified first build is pinned to:
+The smaller Core image is pinned to:
 
 ```text
-ghcr.io/ranitayer/vastgame-core@sha256:1224b1502d72be0fb082eceb6e762f600621d306032f137adc730a69731d1962
+ghcr.io/ranitayer/vastgame-core@sha256:f7b5cbd83825d9e60f7b16b36555e76c4d327614141e629779284944db9d6fb7
 ```
 
-Its single compressed layer is 8,613,022,221 bytes (about 8.6 GB). Local boot,
-Docker, GE-Proton11-7, Steam Runtime, DXVK/VKD3D and temporary-identity cleanup
-were checked. The package must be public before enabling the launcher override;
+Its single compressed layer is 7,568,588,155 bytes (about 7.57 GB), 12.13% smaller
+than the original build. APT downloads, non-license guest documentation and unused
+disk blocks were removed. Gaming containers, drivers, locales and the prepared
+runtime remain. Runtime file hashes and disk integrity were verified; the smaller
+image has not had a live Vast test. Local boot, Docker, GE-Proton11-7, Steam Runtime,
+DXVK/VKD3D and temporary-identity cleanup were checked on the original build.
+The package must be public before enabling the launcher override;
 repository visibility does not change package visibility. The existing private
 Vast template is unchanged; this image has not yet passed a fresh
-Vast GPU/encoding/gameplay test. The immutable digest and validation receipt are
-attached to the `core-vm-527850c` experimental GitHub release.
+Vast GPU/encoding/gameplay test. The original build receipt is attached to the
+`core-vm-527850c` experimental GitHub release. The smaller image's local receipt is
+`build/core-slim-local/slim-receipt.json`; its published tag is
+`slim-20261008-f7b5cbd`.
+
+`bash packaging/core-vm/slim.sh` makes a local compact copy using the pinned image.
+It does not upload it or change the selected launch image. Keep temporary build
+space on disk, and verify a replacement before removing the previous version.
 
 ### Select the prebuilt image
 
@@ -171,7 +181,7 @@ After making the compiled GHCR package public, save
 
 ```json
 {
-  "image": "ghcr.io/ranitayer/vastgame-core@sha256:1224b1502d72be0fb082eceb6e762f600621d306032f137adc730a69731d1962",
+  "image": "ghcr.io/ranitayer/vastgame-core@sha256:f7b5cbd83825d9e60f7b16b36555e76c4d327614141e629779284944db9d6fb7",
   "template_hash": "a4a9d7dbdd5453175cda4a4c4db1ab60",
   "visibility": "public"
 }
