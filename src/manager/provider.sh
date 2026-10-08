@@ -222,9 +222,19 @@ check_instance_failure() {
     local intended
     local next
     local msg
+    local listing
 
     info="${2:-}"
-    if [[ -z "$info" ]]; then info="$(instance_json "$id" 2>/dev/null)" || return 0; fi
+    if (( $# < 2 )); then info="$(instance_json "$id" 2>/dev/null || true)"; fi
+    if ! jq -e --arg id "$id" '(.id | tostring) == $id' >/dev/null 2>&1 <<<"$info"; then
+        # Confirm absence through the account list; an API outage is not deletion.
+        listing="$(timeout 15s vastai show instances --raw 2>/dev/null)" || return 0
+        if jq -e --arg id "$id" 'type == "array" and all(.[]; (.id | tostring) != $id)' >/dev/null 2>&1 <<<"$listing"; then
+            if [[ "$(cat "$INSTANCE_FILE" 2>/dev/null || true)" == "$id" ]]; then rm -f "$INSTANCE_FILE"; fi
+            die "Vast instance $id no longer exists. Stop this watcher and start a new instance."
+        fi
+        return 0
+    fi
 
     actual="$(
         jq -r '.actual_status // "provisioning"' <<<"$info"

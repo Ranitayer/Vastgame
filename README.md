@@ -35,7 +35,10 @@ The experimental prebuilt Core VM build is defined in
 and can be built locally or through GitHub Actions. The first image is published
 and passed local boot/runtime checks. A local `core-image.json` selects its pinned
 digest for a fresh Vast launch; public package access is required. Fresh Vast
-GPU/streaming acceptance remains pending.
+GPU/streaming acceptance remains pending. The live custom-image trial started
+the outer SSH container instead of the VM guest; the local override is disabled
+until the Vast VM launch integration is verified. New launches use the official
+Core VM template.
 
 ## Source layout
 

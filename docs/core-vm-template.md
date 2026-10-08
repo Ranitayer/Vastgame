@@ -176,6 +176,13 @@ space on disk, and verify a replacement before removing the previous version.
 
 ### Select the prebuilt image
 
+**Currently disabled locally:** the 2026-10-08 live trial launched the outer SSH
+container instead of the prepared guest and failed with `Bootstrap requires xz`.
+The published image is retained, but its Vast VM launch integration is not
+validated. Configuration is saved as `core-image.experimental.json`; new launches
+use the official Core VM template. Do not enable the override for normal gaming
+until the supervisor launch, guest boot and bootstrap transport are verified.
+
 After making the compiled GHCR package public, save
 `~/.config/vastgame/core-image.json` with mode `600`:
 

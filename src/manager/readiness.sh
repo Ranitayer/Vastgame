@@ -8,7 +8,8 @@ wait_for_gaming() {
     local now
     local e
     local ip
-    local info payload
+    local info payload event
+    local last_diagnostic=0
 
     tailscale status >/dev/null 2>&1 ||
         die "Tailscale is not running/logged in on this PC."
@@ -32,10 +33,20 @@ wait_for_gaming() {
 
         progress_run tailscale_wait_frame instance_json "$id" || true
         info="$VG_POLL_OUTPUT"
-        [[ -z "$info" ]] || check_instance_failure "$id" "$info"
+        check_instance_failure "$id" "$info"
 
         e=$(( $(date +%s) - start ))
         print_tailscale_progress "$e"
+
+        # Report the latest bootstrap failure even before its Tailscale HTTP service exists.
+        if (( e >= 30 && e - last_diagnostic >= 30 )); then
+            last_diagnostic="$e"
+            progress_run tailscale_wait_frame timeout 15s vastai logs "$id" --tail 80 || true
+            event="$(grep -E '\[VASTGAME\]|^Bootstrap requires xz$' <<<"$VG_POLL_OUTPUT" | tail -n 1 || true)"
+            if [[ "$event" == *'[VASTGAME] ERROR:'* || "$event" == 'Bootstrap requires xz' ]]; then
+                destroy_failed_prompt "$id" "Bootstrap failed before Tailscale connected: $event"
+            fi
+        fi
 
         (( e < TAILSCALE_TIMEOUT )) ||
             destroy_failed_prompt \
@@ -73,7 +84,7 @@ wait_for_gaming() {
             progress_clear
             progress_run bootstrap_wait_frame instance_json "$id" || true
             info="$VG_POLL_OUTPUT"
-            [[ -z "$info" ]] || check_instance_failure "$id" "$info"
+            check_instance_failure "$id" "$info"
             last_health=$((e + 1))
         fi
         progress_run bootstrap_wait_frame curl -fsS --connect-timeout 2 --max-time 3 "http://$ip:$STATUS_PORT/progress.json" || true
@@ -101,4 +112,3 @@ wait_for_gaming() {
         progress_run bootstrap_wait_frame sleep "$interval"
     done
 }
-
