@@ -343,13 +343,16 @@ control socket. This avoids MangoHud versions where `no_display` also disables
 logging. It does not enable
 DLSS, change resolution, or apply a new FPS cap; existing user caps are retained.
 
-The VM reads fresh, complete CSV samples for the configured executable, including
-MangoHud's `wine-` filename form. Each
+The VM reads fresh, complete CSV samples for the configured executable or a
+running renderer it launches from the same game folder, including MangoHud's
+`wine-` filename form. Engine and plugin helpers are excluded. Each
 launch gets its own private log directory, so other executables and old sessions
 cannot supply its FPS. MangoHud supplies measured game FPS and frametime, plus
 CPU temperature and GPU power/clocks where supported. VM CPU/RAM and NVIDIA
 GPU/VRAM/temperature stats remain independently measured. The collector reads
 at 0.5-second intervals and caches NVIDIA hardware probes for two seconds.
+When game FPS is missing, the HUD distinguishes absent MangoHud logs from logs
+that do not match the running renderer.
 
 The existing transparent top-left HUD shows game FPS separately from Moonlight
 stream FPS. VM packets must match the current game/session and be fresh before

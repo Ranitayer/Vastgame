@@ -19,49 +19,77 @@ def number(value):
         return None
 
 
-def mango_sample(folder, executable, started, now=None):
+def mango_sample(folder, executable, started, now=None, related=()):
     now = time.time() if now is None else now
-    name = Path(executable).name.lower()
-    stem = Path(name).stem
-    names = (name + '_', stem + '_', 'wine-' + name + '_', 'wine-' + stem + '_')
+    names = tuple(prefix for exe in (executable, *related)
+                  for name in [Path(exe).name.lower()]
+                  for prefix in (name + '_', Path(name).stem + '_',
+                                 'wine-' + name + '_', 'wine-' + Path(name).stem + '_'))
     files = []
     for p in folder.glob('*.csv'):
         if p.name.lower().startswith(names) and not p.name.endswith('_summary.csv'):
-            stat = p.stat()
+            try:
+                stat = p.stat()
+            except FileNotFoundError:
+                continue
             if stat.st_mtime >= started and 0 <= now - stat.st_mtime < 5:
                 files.append((stat.st_mtime, p))
     if not files:
         return {}
-    p = max(files)[1]
-    with p.open('rb') as stream:
-        header = stream.read(8192).decode(errors='replace').splitlines()
-    columns = None
-    for line in header:
-        values = [value.strip() for value in next(csv.reader([line]))]
-        if {'fps', 'frametime'} <= set(values):
-            columns = values
-            break
-    if not columns:
-        return {}
-    # A writer may be midway through its last row; never accept truncated data.
-    with p.open('rb') as stream:
-        stream.seek(max(0, p.stat().st_size - 16384))
-        raw = stream.read(16384)
-    tail = raw.decode(errors='replace').splitlines()
-    if raw and not raw.endswith(b'\n'): tail = tail[:-1]
-    for line in reversed(tail):
-        values = next(csv.reader([line]))
-        if len(values) != len(columns): continue
-        row = dict(zip(columns, values))
-        fps, frametime = number(row.get('fps')), number(row.get('frametime'))
-        if fps is None or frametime is None or frametime <= 0: continue
-        data = dict(game_fps=fps, frametime_ms=frametime)
-        for key, column in [('cpu_temp_c', 'cpu_temp'), ('gpu_clock_mhz', 'gpu_core_clock'),
-                            ('gpu_memory_clock_mhz', 'gpu_mem_clock'), ('gpu_power_w', 'gpu_power')]:
-            value = number(row.get(column))
-            if value is not None and value > 0: data[key] = value
-        return data
+    for _, p in sorted(files, reverse=True):
+        try:
+            with p.open('rb') as stream:
+                header = stream.read(8192).decode(errors='replace').splitlines()
+                stream.seek(max(0, p.stat().st_size - 16384))
+                raw = stream.read(16384)
+        except FileNotFoundError:
+            continue
+        columns = None
+        for line in header:
+            values = [value.strip() for value in next(csv.reader([line]))]
+            if {'fps', 'frametime'} <= set(values):
+                columns = values
+                break
+        if not columns:
+            continue
+        # A writer may be midway through its last row; never accept truncated data.
+        tail = raw.decode(errors='replace').splitlines()
+        if raw and not raw.endswith(b'\n'): tail = tail[:-1]
+        for line in reversed(tail):
+            values = next(csv.reader([line]))
+            if len(values) != len(columns): continue
+            row = dict(zip(columns, values))
+            fps, frametime = number(row.get('fps')), number(row.get('frametime'))
+            if fps is None or frametime is None or frametime <= 0: continue
+            data = dict(game_fps=fps, frametime_ms=frametime)
+            for key, column in [('cpu_temp_c', 'cpu_temp'), ('gpu_clock_mhz', 'gpu_core_clock'),
+                                ('gpu_memory_clock_mhz', 'gpu_mem_clock'), ('gpu_power_w', 'gpu_power')]:
+                value = number(row.get(column))
+                if value is not None and value > 0: data[key] = value
+            return data
     return {}
+
+
+def running_game_executables(gid, proc=Path('/proc')):
+    """Find renderers spawned by a launcher, without accepting Wine helpers."""
+    root = '/games/' + gid + '/'
+    excluded = ('/engine/', '/plugins/', '/redist/', '/prereq/')
+    result = set()
+    for entry in proc.glob('[0-9]*'):
+        try:
+            args = (entry / 'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        for raw in args:
+            value = raw.decode(errors='replace').replace('\\', '/')
+            if len(value) >= 2 and value[1] == ':':
+                value = value[2:]
+            lower = value.lower()
+            if (lower.startswith(root) and lower.endswith('.exe')
+                    and Path(lower).name not in {'crashpad_handler.exe', 'epicwebhelper.exe'}
+                    and not any(part in lower for part in excluded)):
+                result.add(Path(value).name)
+    return result
 
 
 def mango_environment(folder, control):
@@ -105,11 +133,20 @@ class Collector:
         try: start_mango_logging(self.control, self.connected)
         except OSError: pass
         game = mango_sample(self.folder, self.exe, self.started)
+        if not game and any(self.folder.glob('*.csv')):
+            game = mango_sample(self.folder, self.exe, self.started,
+                                related=running_game_executables(self.gid))
         data.update(game)
         data['game_metrics_source'] = 'MangoHud'
         data['game_metrics_status'] = 'live' if game else 'waiting'
-        data['game_metrics_note'] = '' if game else ('Waiting for MangoHud game frames' if time.time()-self.started < 60
-                                                   else 'No game samples; check MangoHud injection in the launch log')
+        if game:
+            data['game_metrics_note'] = ''
+        elif time.time()-self.started < 60:
+            data['game_metrics_note'] = 'Waiting for MangoHud game frames'
+        elif any(self.folder.glob('*.csv')):
+            data['game_metrics_note'] = 'MangoHud logs found, but no fresh valid renderer frames'
+        else:
+            data['game_metrics_note'] = 'MangoHud wrote no frame logs; check injection in the launch log'
         loads = []
         for line in Path('/proc/stat').read_text().splitlines():
             if not line.startswith('cpu'):

@@ -194,6 +194,19 @@ class MetricsTests(unittest.TestCase):
             sample=telemetry.mango_sample(root,'SLASHER-Win64-Shipping.exe',0)
             self.assertEqual(sample['game_fps'],70)
 
+    def test_launcher_child_renderer_supplies_game_fps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); proc=root/'proc'; (proc/'123').mkdir(parents=True)
+            (proc/'124').mkdir()
+            (proc/'123'/'cmdline').write_bytes(b'Z:\\games\\expedition-33\\Sandfall\\Binaries\\Win64\\Sandfall-Win64-Shipping.exe\0')
+            (proc/'124'/'cmdline').write_bytes(b'Z:\\games\\expedition-33\\Engine\\Binaries\\Win64\\EpicWebHelper.exe\0')
+            names=telemetry.running_game_executables('expedition-33',proc)
+            self.assertEqual(names,{'Sandfall-Win64-Shipping.exe'})
+            (root/'wine-Sandfall-Win64-Shipping_2026.csv').write_text('fps,frametime\n74,13.5\n')
+            (root/'wine-EpicWebHelper_2026.csv').write_text('fps,frametime\n999,1\n')
+            sample=telemetry.mango_sample(root,'Expedition33_Steam.exe',0,related=names)
+            self.assertEqual(sample['game_fps'],74)
+
     def test_invalid_csv_and_old_session_not_fps(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); source=root/'PRAGMATA.exe_2026.csv'
