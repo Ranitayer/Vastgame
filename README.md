@@ -286,6 +286,20 @@ range response; otherwise the download restarts. Signed URLs are not saved in
 staging metadata. `--sha256` verifies the original ZIP against a checksum you trust;
 transport and package hashes alone do not establish source authenticity.
 
+Large ZIP downloads use up to eight parallel HTTP range connections when the
+server supplies a strong ETag and known length. Every range must match its exact
+offset, length, total and ETag. A bounded window of at most eight 32 MiB pieces is
+appended in order and discarded; no second full archive is assembled. Failures
+retain the contiguous ZIP prefix for the existing resume path. Servers that
+ignore/reject ranges, lack suitable validators or limit concurrent requests use
+one connection instead. Use `--connections 1` to force a single connection, or
+`--connections 4` for a smaller window. A server-wide bandwidth cap still applies.
+The progress line shows the connection mode and combined throughput. This change
+applies to new ingest processes; it does not change an import already running.
+Parallel mode needs another 32 MiB of free headroom while committing a piece;
+otherwise it falls back to a single connection. Range handling follows
+[HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#name-range).
+
 Staging needs space for the downloaded ZIP, extracted game and 576 MiB of upload
 workspace. Packaging streams tar/zstd into at most two 256 MiB chunks. Each chunk
 is hash-addressed, uploaded immutably, verified against Drive's MD5, then discarded.
@@ -368,7 +382,7 @@ The updater verifies download/file checksums, holds lifecycle and catalog locks,
 stages the backend and restores changed files if installation fails.
 
 To publish later changes from this checkout, commit the intended source changes,
-then run `bash scripts/release-windows.sh 1.1.2` with a new version. GitHub builds
+then run `bash scripts/release-windows.sh 1.1.3` with a new version. GitHub builds
 and publishes `Vastgame.zip` automatically from that exact tag. Account bundles,
 dependency downloads and local build workspaces are excluded. Review
 `packaging/windows/RELEASE-NOTES.md` before publishing. No VM is changed by release

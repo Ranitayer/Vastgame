@@ -65,6 +65,7 @@ Game catalog:
   vastgame ingest <URL> [id]        Import and publish a direct portable-game ZIP
     --exe <path> --dlss --sha256 <hash> --keep-staging
                                    Resolve EXE ambiguity, enable NGX, verify source, retain staging
+    --connections <1-8>             ZIP download connections (default 8; safely falls back to 1)
   vastgame add ... --dlss           Enable NVIDIA compatibility; choose effects in-game
   vastgame game list                List registered games
   vastgame game inspect <id>        Print a game's manifest

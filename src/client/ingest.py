@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Import a direct portable-game ZIP through the shared catalog and publisher."""
 import argparse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
 import json
@@ -12,6 +14,8 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -24,24 +28,104 @@ from import_progress import Progress
 
 BLOCK = 1024 * 1024
 RESERVE = 576 * 1024 * 1024
+RANGE_BYTES = 32 * 1024 * 1024
 ZIP_METHODS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA}
 # Python 3.14 reads both current and legacy Zstandard ZIP method IDs.
 if hasattr(zipfile, 'ZIP_ZSTANDARD'):
     ZIP_METHODS.update((20, zipfile.ZIP_ZSTANDARD))
 
 
-def download(url, job, progress=None):
+class RangeUnsupported(ValueError):
+    """The server does not permit safe parallel ranges; use a single stream."""
+
+
+def download_ranges(url, archive, job, saved, offset, connections, progress):
+    """Keep only a bounded window of ranges; commit them to the ZIP in order."""
+    cancel = threading.Event()
+    total = saved['total']; etag = saved['etag']
+
+    def fetch(start, end, target):
+        for attempt in range(3):
+            received = 0
+            try:
+                if cancel.is_set(): raise RuntimeError('ZIP download cancelled')
+                headers = {'User-Agent': 'Vastgame/1', 'Accept-Encoding': 'identity',
+                           'Range': f'bytes={start}-{end}', 'If-Range': etag}
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
+                    if response.status == 200: raise RangeUnsupported('Server ignored parallel range request')
+                    match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response.headers.get('Content-Range', ''))
+                    if (response.status != 206 or not match or tuple(map(int, match.groups())) != (start, end, total)
+                            or response.headers.get('ETag') != etag
+                            or response.headers.get('Content-Encoding', 'identity').lower() != 'identity'
+                            or urllib.parse.urlsplit(response.url).scheme not in ('http', 'https')):
+                        raise RangeUnsupported('Server returned an incompatible range response')
+                    with target.open('wb') as output:
+                        while block := response.read(min(BLOCK, end-start+1-received)):
+                            if cancel.is_set(): raise RuntimeError('ZIP download cancelled')
+                            if shutil.disk_usage(job).free < len(block)+RESERVE:
+                                raise ValueError('Staging disk is full; partial download kept for retry')
+                            output.write(block); received += len(block)
+                            if progress: progress.advance(len(block))
+                        if received != end-start+1 or response.read(1): raise OSError('Incomplete or oversized range')
+                return target
+            except urllib.error.HTTPError as exc:
+                # Rate/concurrency limits use the existing single-stream retry path.
+                if exc.code in (400, 403, 405, 416, 429, 503):
+                    raise RangeUnsupported('Server refused parallel downloads') from None
+                raise ValueError(f'ZIP server returned HTTP {exc.code}; no game published') from None
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.IncompleteRead):
+                if progress: progress.advance(-received)
+                if attempt == 2: raise OSError('ZIP range download interrupted') from None
+                if cancel.wait(1): raise RuntimeError('ZIP download cancelled') from None
+
+    # One committing range can temporarily exist both in the ZIP and this window.
+    if total-offset+RESERVE+RANGE_BYTES > shutil.disk_usage(job).free:
+        return False
+    with tempfile.TemporaryDirectory(prefix='zip-parts-', dir=job) as temporary:
+        pool = ThreadPoolExecutor(max_workers=connections)
+        pending = deque()
+        ranges = iter(range(offset, total, RANGE_BYTES))
+        def enqueue():
+            start = next(ranges, None)
+            if start is not None:
+                target = Path(temporary)/str(start)
+                pending.append(pool.submit(fetch, start, min(total-1, start+RANGE_BYTES-1), target))
+        try:
+            if progress: progress.phase('1/6 Downloading ZIP', total, offset, detail=f'Up to {connections} connections')
+            with archive.open('ab' if offset else 'wb') as output:
+                for _ in range(connections): enqueue()
+                while pending:
+                    target = pending.popleft().result()
+                    with target.open('rb') as source:
+                        while block := source.read(BLOCK):
+                            if shutil.disk_usage(job).free < len(block)+RESERVE:
+                                raise ValueError('Staging disk is full; partial download kept for retry')
+                            output.write(block)
+                    output.flush()
+                    target.unlink()
+                    enqueue()
+            return True
+        finally:
+            cancel.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+
+
+def download(url, job, progress=None, connections=8):
+    if type(connections) is not int or not 1 <= connections <= 8:
+        raise ValueError('Download connections must be between 1 and 8')
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError('Use a direct HTTP(S) ZIP URL without embedded account credentials')
     archive = job/'download.zip'
     metadata = job/'download.json'
     saved = json.loads(metadata.read_text()) if metadata.exists() else {}
+    parallel = connections > 1
     if saved.get('complete') and archive.exists():
         if progress: progress.phase('1/6 Checking cached ZIP', archive.stat().st_size)
         if hash_file(archive, progress=progress) == saved.get('sha256'):
             return archive
-    for attempt in range(3):
+    attempt = 0
+    while attempt < 3:
         if progress: progress.phase('1/6 Connecting to ZIP server', detail=f'Attempt {attempt+1}/3')
         offset = archive.stat().st_size if archive.exists() else 0
         validator = saved.get('etag') or saved.get('modified')
@@ -63,6 +147,8 @@ def download(url, job, progress=None):
                 if etag and etag.startswith('W/'):
                     etag = None
                 modified = response.headers.get('Last-Modified')
+                if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
+                    raise ValueError('Unexpected HTTP content encoding; no game published')
                 if status == 206:
                     match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response.headers.get('Content-Range', ''))
                     if not offset or not match or int(match[1]) != offset or (etag or modified) != validator:
@@ -79,13 +165,28 @@ def download(url, job, progress=None):
                 saved = dict(etag=etag, modified=modified, total=total, complete=False)
                 atomic(metadata, saved)
                 received = offset
-                if progress: progress.phase('1/6 Downloading ZIP', total, offset)
-                with archive.open('ab' if offset else 'wb') as output:
-                    while block := response.read(BLOCK):
-                        if shutil.disk_usage(job).free < len(block)+RESERVE:
-                            raise ValueError('Staging disk is full; partial download kept for retry')
-                        output.write(block); received += len(block)
-                        if progress: progress.advance(len(block))
+                if progress: progress.phase('1/6 Downloading ZIP', total, offset, detail='1 connection')
+                ranged = False
+                if (parallel and etag and total is not None and total-offset >= 2*RANGE_BYTES
+                        and response.headers.get('Accept-Ranges', '').lower() != 'none'):
+                    # HEAD/Accept-Ranges alone cannot prove a server honors every range.
+                    resolved_url = response.url
+                    response.close()
+                    try: ranged = download_ranges(resolved_url, archive, job, saved, offset, connections, progress)
+                    except RangeUnsupported:
+                        parallel = False
+                        continue
+                    if not ranged:
+                        parallel = False
+                        continue
+                    received = archive.stat().st_size
+                if not ranged:
+                    with archive.open('ab' if offset else 'wb') as output:
+                        while block := response.read(BLOCK):
+                            if shutil.disk_usage(job).free < len(block)+RESERVE:
+                                raise ValueError('Staging disk is full; partial download kept for retry')
+                            output.write(block); received += len(block)
+                            if progress: progress.advance(len(block))
                 if total is not None and received != total:
                     raise OSError('Incomplete download')
                 with archive.open('rb') as source:
@@ -103,6 +204,7 @@ def download(url, job, progress=None):
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.IncompleteRead):
             if attempt == 2:
                 raise ValueError('ZIP download interrupted; staging kept. Repeat the same ingest command to resume') from None
+            attempt += 1
             time.sleep(1)
     raise ValueError('Download failed')
 
@@ -198,15 +300,15 @@ def extract(archive, job, progress=None):
         raise
 
 
-def ingest(url, catalog, cache, gid=None, exe=None, dlss=False, expected_sha=None, keep=False):
+def ingest(url, catalog, cache, gid=None, exe=None, dlss=False, expected_sha=None, keep=False, connections=8):
     with Progress() as progress:
-        result = _ingest(url, catalog, cache, gid, exe, dlss, expected_sha, keep, progress)
+        result = _ingest(url, catalog, cache, gid, exe, dlss, expected_sha, keep, progress, connections)
         progress.phase('Import complete', 0, detail=result['id'])
     print('Imported game '+result['id']+'; start it with: vastgame start '+result['id'], flush=True)
     return result
 
 
-def _ingest(url, catalog, cache, gid, exe, dlss, expected_sha, keep, progress):
+def _ingest(url, catalog, cache, gid, exe, dlss, expected_sha, keep, progress, connections=8):
     if gid:
         valid_id(gid)
         if (catalog/gid/'manifest.json').exists():
@@ -214,7 +316,7 @@ def _ingest(url, catalog, cache, gid, exe, dlss, expected_sha, keep, progress):
     job = cache/hashlib.sha256(url.encode()).hexdigest()
     job.mkdir(parents=True, exist_ok=True, mode=0o700)
     job.chmod(0o700)
-    archive = download(url, job, progress)
+    archive = download(url, job, progress, connections)
     if expected_sha:
         progress.phase('1/6 Checking trusted checksum', archive.stat().st_size)
     if expected_sha and hash_file(archive, progress=progress) != expected_sha:
@@ -243,6 +345,8 @@ def main():
     parser.add_argument('--dlss', action='store_true')
     parser.add_argument('--sha256', help='Expected SHA256 of the downloaded ZIP')
     parser.add_argument('--keep-staging', action='store_true')
+    parser.add_argument('--connections', type=int, choices=range(1, 9), default=8,
+                        help='Parallel ZIP connections when safely supported (default: 8; 1 disables)')
     parser.add_argument('--catalog', type=Path, required=True)
     parser.add_argument('--cache', type=Path, required=True)
     args = parser.parse_args()
@@ -250,7 +354,7 @@ def main():
         parser.error('--sha256 must contain 64 hexadecimal characters')
     try:
         ingest(args.url, args.catalog, args.cache, args.game_id, args.exe, args.dlss,
-               args.sha256.lower() if args.sha256 else None, args.keep_staging)
+               args.sha256.lower() if args.sha256 else None, args.keep_staging, args.connections)
     except KeyboardInterrupt:
         raise SystemExit('Import cancelled; catalog unchanged. Repeat the command to reuse staging')
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, EOFError, subprocess.SubprocessError) as exc:

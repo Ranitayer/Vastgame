@@ -6,6 +6,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -123,6 +124,80 @@ class IngestTests(unittest.TestCase):
             with patch.object(ingest.urllib.request,'urlopen',return_value=Response(data)):
                 with self.assertRaisesRegex(ValueError,'Unsupported ingest format'):
                     ingest.download('https://example.com/game.zip',self.root)
+
+    def test_parallel_ranges_overlap_and_reassemble_exact_zip(self):
+        data=self.zip([('Game.exe',PE),('data.bin',bytes(range(256))*80)]).read_bytes()
+        barrier=threading.Barrier(4);lock=threading.Lock();starts=[]
+        class Response(io.BytesIO):
+            url='https://example.com/game.zip'
+            def __init__(self, body, status, headers):
+                super().__init__(body);self.status=status;self.headers=headers
+        def open_request(request, **kwargs):
+            requested=request.get_header('Range')
+            if not requested:
+                return Response(data,200,{'Content-Length':str(len(data)),'ETag':'"v1"'})
+            self.assertEqual(request.get_header('If-range'),'"v1"')
+            start,end=map(int,requested.removeprefix('bytes=').split('-'))
+            with lock:
+                starts.append(start);first=len(starts)<=4
+            if first:barrier.wait(timeout=5)
+            return Response(data[start:end+1],206,{'Content-Range':f'bytes {start}-{end}/{len(data)}','ETag':'"v1"'})
+        with patch.object(ingest,'RANGE_BYTES',1024),patch.object(ingest.urllib.request,'urlopen',side_effect=open_request):
+            result=ingest.download('https://example.com/game.zip',self.root,connections=4)
+        self.assertEqual(result.read_bytes(),data)
+        self.assertGreaterEqual(len(starts),4)
+        self.assertEqual(list(self.root.glob('zip-parts-*')),[])
+        self.assertEqual(json.loads((self.root/'download.json').read_text())['sha256'],hashlib.sha256(data).hexdigest())
+
+    def test_ignored_ranges_fall_back_without_corrupting_resumed_prefix(self):
+        data=self.zip([('Game.exe',PE),('data.bin',b'x'*12000)]).read_bytes()
+        self.archive.write_bytes(data[:37])
+        ingest.atomic(self.root/'download.json',dict(etag='"v1"',total=len(data),complete=False))
+        resumes=[]
+        class Response(io.BytesIO):
+            url='https://example.com/game.zip'
+            def __init__(self,body,status,headers):
+                super().__init__(body);self.status=status;self.headers=headers
+        def open_request(request, **kwargs):
+            requested=request.get_header('Range')
+            if requested.endswith('-'):
+                start=int(requested[6:-1]);resumes.append(start)
+                return Response(data[start:],206,{'Content-Range':f'bytes {start}-{len(data)-1}/{len(data)}','ETag':'"v1"'})
+            return Response(data,200,{'Content-Length':str(len(data)),'ETag':'"v1"'})
+        with patch.object(ingest,'RANGE_BYTES',1024),patch.object(ingest.urllib.request,'urlopen',side_effect=open_request):
+            result=ingest.download('https://example.com/game.zip',self.root,connections=4)
+        self.assertEqual(result.read_bytes(),data)
+        self.assertEqual(resumes,[37,37])
+        self.assertEqual(list(self.root.glob('zip-parts-*')),[])
+
+    def test_parallel_ranges_never_accept_another_etag(self):
+        data=self.zip([('Game.exe',PE),('data.bin',b'x'*12000)]).read_bytes()
+        ranged=[]
+        class Response(io.BytesIO):
+            url='https://example.com/game.zip'
+            def __init__(self,body,status,headers):
+                super().__init__(body);self.status=status;self.headers=headers
+        def open_request(request, **kwargs):
+            requested=request.get_header('Range')
+            if not requested:return Response(data,200,{'Content-Length':str(len(data)),'ETag':'"v1"'})
+            ranged.append(requested)
+            start,end=map(int,requested[6:].split('-'))
+            return Response(b'z'*(end-start+1),206,{'Content-Range':f'bytes {start}-{end}/{len(data)}','ETag':'"v2"'})
+        with patch.object(ingest,'RANGE_BYTES',1024),patch.object(ingest.urllib.request,'urlopen',side_effect=open_request):
+            result=ingest.download('https://example.com/game.zip',self.root,connections=4)
+        self.assertTrue(ranged)
+        self.assertEqual(result.read_bytes(),data)
+
+    def test_single_connection_and_weak_etag_do_not_start_parallel_requests(self):
+        data=self.zip([('Game.exe',PE),('data.bin',b'x'*12000)]).read_bytes()
+        class Response(io.BytesIO):
+            url='https://example.com/game.zip';status=200
+            headers={'Content-Length':str(len(data)),'ETag':'W/"v1"','Accept-Ranges':'bytes'}
+        for connections in (1,8):
+            with patch.object(ingest,'RANGE_BYTES',1024),patch.object(ingest.urllib.request,'urlopen',return_value=Response(data)) as opener:
+                self.assertEqual(ingest.download('https://example.com/game.zip',self.root,connections=connections).read_bytes(),data)
+                self.assertEqual(opener.call_count,1)
+            (self.root/'download.json').unlink()
 
     def test_encrypted_and_multipart_zip_rejected_before_extraction(self):
         data=bytearray(self.zip([('Game.exe', PE)]).read_bytes())
