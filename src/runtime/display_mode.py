@@ -25,8 +25,17 @@ def resize(width, height, label, game, session):
                 continue
             environment = dict(entry.split(b'=', 1) for entry in (process/'environ').read_bytes().split(b'\0') if b'=' in entry)
             if b'DISPLAY' not in environment: continue
-            for key in (b'DISPLAY', b'XAUTHORITY'):
+            for key in (b'DISPLAY', b'XAUTHORITY', b'HOME', b'XDG_RUNTIME_DIR'):
                 if key in environment: os.environ[key.decode()] = os.fsdecode(environment[key])
+                else: os.environ.pop(key.decode(), None)
+            # Xwayland authenticates local connections as the game user, not Docker's root user.
+            owner = process.stat()
+            if os.geteuid() == 0:
+                os.setgroups([])
+                os.setgid(owner.st_gid)
+                os.setuid(owner.st_uid)
+            elif os.geteuid() != owner.st_uid:
+                raise ValueError('Display helper must run as the game user')
             break
         except OSError:
             continue
@@ -83,8 +92,12 @@ def host(label, game, session, width, height):
     if len(containers) != 1: raise ValueError('Multiple game displays found; no display changed')
     # Execute this small helper in isolation; never replace the running /opt/vastgame files.
     program = globals().get('source') or Path(__file__).read_text()
-    subprocess.run(['docker', 'exec', containers[0], 'python3', '-c', program,
-                    'resize', str(width), str(height), label, game, session], check=True, timeout=10)
+    try:
+        result = subprocess.run(['docker', 'exec', containers[0], 'python3', '-c', program,
+                                 'resize', str(width), str(height), label, game, session], timeout=10)
+    except subprocess.TimeoutExpired:
+        raise ValueError('Game display request timed out; streaming remains available') from None
+    if result.returncode: raise SystemExit(result.returncode)
 
 
 if __name__ == '__main__':

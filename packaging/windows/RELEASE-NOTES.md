@@ -1,4 +1,9 @@
-Vastgame 1.1.4 updates game display resizing, stream controls, telemetry and import progress.
+Vastgame 1.1.5 fixes access to the active game display when changing stream resolution.
+
+- The display helper uses the running game's user and X11 environment instead of Docker's root identity. This fixes local Xwayland display authorization without changing permissions or replacing the game runtime.
+- Resize failures now show a short diagnostic instead of printing the entire helper program.
+
+Includes the stream controls, telemetry and import progress improvements from 1.1.4:
 
 - Reconnecting to a running game applies the selected stream resolution to its Gamescope virtual screen. The operation verifies the VM and game session, uses Gamescope's built-in mode control, and leaves the active runtime, game settings and saves intact. Games that cache display modes may need a game restart. If resizing is unavailable, streaming continues with a warning.
 - Native Linux Moonlight gains the bottom-left stream menu, with the requested dark palette, centered button text and a working Ctrl+Alt+Shift+M shortcut. The HUD stays sized to the local display when stream resolution changes. Menu preferences use the existing stream settings file.
