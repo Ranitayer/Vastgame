@@ -241,11 +241,23 @@ check_instance_failure() {
     msg="$(extract_message <<<"$info")"
 
     case "$actual" in
-        exited|unknown|offline|stopped)
+        offline)
+            # Vast can briefly report offline while the host reconnects during a pull.
+            local now
+            now="$(date +%s)"
+            if [[ "${VG_OFFLINE_INSTANCE:-}" != "$id" || "${VG_OFFLINE_SINCE:-0}" == 0 ]]; then
+                VG_OFFLINE_INSTANCE="$id"
+                VG_OFFLINE_SINCE="$now"
+            elif (( now - VG_OFFLINE_SINCE >= 90 )); then
+                destroy_failed_prompt "$id" "Vast host remained offline for 90 seconds."
+            fi
+            ;;
+        exited|unknown|stopped)
             destroy_failed_prompt \
                 "$id" \
                 "Vast entered terminal state: $actual"
             ;;
+        *) VG_OFFLINE_SINCE=0 ;;
     esac
 
     if [[ "$intended" == "stopped" ||
@@ -267,4 +279,3 @@ check_instance_failure() {
             "Vast reported: $msg"
     fi
 }
-

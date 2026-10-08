@@ -260,62 +260,17 @@ while true; do
             <<<"$info"
     )"
 
-    intended="$(
-        jq -r \
-            '.intended_status // "-"' \
-            <<<"$info"
-    )"
-
-    next="$(
-        jq -r \
-            '(.next_state // "-") | tostring' \
-            <<<"$info"
-    )"
-
     msg="$(
         extract_message <<<"$info"
     )"
 
     print_vast_progress "$actual" "$msg" "$e"
+    check_instance_failure "$instance_id" "$info"
 
-    case "$actual" in
-
-        running)
-
-            progress_clear
-            ok "Vast VM is running (elapsed $(elapsed "$e"))"
-            break
-            ;;
-
-        exited|unknown|offline|stopped)
-
-            destroy_failed_prompt \
-                "$instance_id" \
-                "Vast entered terminal state: $actual"
-            ;;
-
-    esac
-
-    if [[ "$intended" == "stopped" ||
-          "$next" == "stopped" ]]
-    then
-
-        destroy_failed_prompt \
-            "$instance_id" \
-            "Vast scheduled the VM to stop during startup."
-
-    fi
-
-    if [[ -n "$msg" ]] &&
-       grep -Eqi \
-       'does not support VMs|unsupported VM|failed to start|insufficient|unable to create|invalid image' \
-       <<<"$msg"
-    then
-
-        destroy_failed_prompt \
-            "$instance_id" \
-            "Vast reported: $msg"
-
+    if [[ "$actual" == running ]]; then
+        progress_clear
+        ok "Vast VM is running (elapsed $(elapsed "$e"))"
+        break
     fi
 
     (( e < VAST_START_TIMEOUT )) ||
