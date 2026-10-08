@@ -158,6 +158,7 @@ class ImmutablePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); source, manifest=self.fixture(root); original=manifest.read_text()
             with patch.object(package, 'compressed_parts', side_effect=self.stream), \
+                 patch.object(package, 'archive_format', return_value=['fixture']), \
                  patch.object(package, 'prepare_upload_folder'), \
                  patch.object(package, 'copy_part'), patch.object(package, 'remote_md5', return_value='bad'):
                 with self.assertRaisesRegex(ValueError, 'verification failed'):
@@ -177,6 +178,7 @@ class ImmutablePackageTests(unittest.TestCase):
                     p=target(args[3]); return package.hash_file(p,'md5')+'  '+p.name+'\n'
                 return target(args[2]).read_bytes()
             with patch.object(package,'compressed_parts',side_effect=self.stream), \
+                 patch.object(package,'archive_format',return_value=['fixture']), \
                  patch.object(package,'prepare_upload_folder'), \
                  patch.object(package,'copy_part',side_effect=lambda args, *ignored: run(args)), \
                  patch.object(package.subprocess,'run',side_effect=run), \
@@ -189,6 +191,24 @@ class ImmutablePackageTests(unittest.TestCase):
             self.assertEqual(len(versions),2)
             self.assertTrue(all((p/'COMMITTED.json').is_file() for p in versions))
             self.assertEqual(len(list((remote/'VastGaming/games/fixture/objects').iterdir())),2)
+
+    def test_retry_reuses_exact_size_measurement_after_failed_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source,manifest=self.fixture(root)
+            md5=package.hash_file(source/'Game.exe','md5')
+            with patch.object(package,'compressed_parts',side_effect=self.stream) as stream, \
+                 patch.object(package,'archive_format',return_value=['fixture']), \
+                 patch.object(package,'prepare_upload_folder'), patch.object(package,'copy_part'), \
+                 patch.object(package,'remote_md5',return_value='bad') as remote_hash, \
+                 patch.object(package,'publish_file'):
+                with self.assertRaisesRegex(ValueError,'verification failed'):
+                    package.publish(manifest,source,root/'work')
+                journal=json.loads((root/'work/publication.json').read_text())
+                self.assertEqual(journal['measurement']['size'],(source/'Game.exe').stat().st_size)
+                self.assertEqual(stream.call_count,2)
+                remote_hash.return_value=md5
+                package.publish(manifest,source,root/'work')
+                self.assertEqual(stream.call_count,3)
 
     def test_upload_folder_is_created_before_parallel_parts(self):
         events = []

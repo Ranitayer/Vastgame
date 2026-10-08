@@ -30,16 +30,37 @@ class ImportProgressTests(unittest.TestCase):
         line=display.line(11)
         self.assertIn('60.0%',line)
         self.assertIn('2.0 MiB/s',line)
-        self.assertIn('ETA 0m 04s',line)
+        self.assertIn('ETA ~0m 04s',line)
 
-    def test_unknown_compressed_size_never_claims_global_completion(self):
-        display=Progress(Terminal()); display.phase('4/6 Packaging / uploading')
-        display.part('part-00000',100); display.upload('part-00000',50)
-        self.assertIn('total pending',display.line(100))
-        self.assertIn('50.0%',display.line(101))
-        self.assertNotIn('100.0%',display.line(102))
-        display.upload_total()
-        self.assertNotIn('total pending',display.line(103))
+    def test_upload_percent_and_eta_cover_the_entire_measured_game(self):
+        display=Progress(Terminal())
+        with patch('import_progress.time.monotonic',return_value=10):
+            display.begin_upload(1000*1024**2)
+        display.part('part-00000',100*1024**2)
+        display.upload('part-00000',50*1024**2)
+        line=display.line(11)
+        self.assertIn('5.0%',line)
+        self.assertNotIn('50.0%',line)
+        self.assertIn('ETA ~0m 19s',line)
+        self.assertNotIn('queued',line)
+
+    def test_reused_upload_receipts_do_not_inflate_transfer_speed(self):
+        display=Progress(Terminal())
+        with patch('import_progress.time.monotonic',return_value=10):
+            display.begin_upload(100*1024**2)
+        display.part('cached',40*1024**2); display.verify('cached')
+        display.part('new',60*1024**2); display.upload('new',10*1024**2)
+        line=display.line(11)
+        self.assertIn('50.0%',line)
+        self.assertIn('10.0 MiB/s',line)
+        self.assertIn('ETA ~0m 05s',line)
+
+    def test_uploaded_bytes_wait_for_verification_without_a_false_zero_second_eta(self):
+        display=Progress(Terminal()); display.begin_upload(100)
+        display.part('part',100); display.upload('part',100)
+        self.assertIn('ETA verifying upload',display.line(100))
+        display.verify('part')
+        self.assertNotIn('verifying upload',display.line(101))
 
     def test_prompt_pause_suppresses_render_and_resumes(self):
         stream=Terminal(); display=Progress(stream)
@@ -57,7 +78,7 @@ class ImportProgressTests(unittest.TestCase):
         wait.assert_called_once_with(5)
 
     def test_rclone_statistics_feed_measured_upload_progress(self):
-        display=Progress(Terminal()); display.phase('4/6 Packaging / uploading')
+        display=Progress(Terminal()); display.begin_upload(1000)
         display.part('part-00000',100)
         class Process:
             stderr=io.StringIO(json.dumps({'stats':{'bytes':75}})+'\n')

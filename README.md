@@ -89,6 +89,18 @@ installed app folder, normally `%LOCALAPPDATA%\Vastgame`; open the included
 `Edit-Stream-Settings.cmd`. The editor waits for you to save and close it, then
 Vastgame confirms the saved resolution/FPS. Save before `vastgame start` or `vastgame connect`.
 Disconnect and reconnect Moonlight to apply changes; no new VM is needed.
+When reconnecting to a running game, Vastgame also updates its Gamescope virtual
+screen to the selected resolution through the verified VM connection. Higher
+resolutions then become available to games that refresh their display modes.
+Games that cache modes at launch may need a game restart. A resize failure shows
+a warning and keeps streaming available; game settings and saves are not rewritten.
+On native Linux Moonlight, press Ctrl+Alt+Shift+M during a stream for the
+bottom-left stream menu. Use Up/Down to select, Left/Right to adjust, Enter on
+Save, and Escape to close. Resolution, FPS, bitrate, codec, VSync and frame
+pacing are saved to the same `stream.json`; reconnect Moonlight to apply them.
+The menu draws one cached texture over the stream only while open. Its size and
+position follow the local display, so a different stream resolution does not
+resize the top-left HUD.
 
 ```json
 {
@@ -321,10 +333,15 @@ not included.
 Import progress refreshes every 0.1 seconds in an interactive terminal, independently
 of blocking reads or uploads. It shows the current stage, byte progress, measured
 MiB/s, ETA and elapsed time through download, hashing, extraction, detection,
-packaging/upload, verified publication and cleanup. Upload percentages initially
-cover only the compressed data produced so far; the final compressed total is
-unknown until packaging finishes. Its ETA is explicitly for queued data until
-then. Verification and cleanup show activity instead of an invented percentage.
+packaging/upload, verified publication and cleanup. Before uploading, a bounded
+size-only compression scan measures the exact complete archive size and checksum.
+This adds one local compression pass; its result is cached for retries when the
+source files and archive-tool versions are unchanged. Upload size, percentage
+and ETA cover the whole archive, including verified parts reused from an earlier
+attempt. Reused parts do not inflate measured upload speed. ETA uses recent
+throughput and remains an estimate; verification is shown separately after all
+bytes transfer. The uncompressed game size is also shown. Verification and cleanup
+show activity instead of an invented percentage.
 Redirected output emits periodic snapshots every five seconds instead of terminal
 control codes. Executable selection pauses rendering so prompts remain readable.
 
@@ -356,10 +373,13 @@ that do not match the running renderer.
 
 The existing transparent top-left HUD shows game FPS separately from Moonlight
 stream FPS. VM packets must match the current game/session and be fresh before
-the client merges them. Missing or stale game data stays unknown with an explicit
-status; stream FPS is never substituted for it. Session history continues to
-store the measured game metrics. The client refreshes merged metrics roughly
-once a second, subject to network response times.
+the client merges them. Reads run in the background; if the Tailscale status
+connection fails, the client tries a persistent SSH reader that verifies the
+VM launch label. This uses the existing SSH key and opens no new VM port.
+Brief gaps retain recent readings. Samples older than six seconds can remain
+visible for up to 30 seconds with their age shown, but do not enter scores or
+session history. After that the values become unknown. Stream FPS is never
+substituted for game FPS. The client refreshes merged metrics roughly once a second.
 
 This integrates with native Linux Moonlight's existing custom HUD. Windows and
 Flatpak clients retain their stock overlays; MangoHud server collection alone
@@ -388,7 +408,7 @@ The updater verifies download/file checksums, holds lifecycle and catalog locks,
 stages the backend and restores changed files if installation fails.
 
 To publish later changes from this checkout, commit the intended source changes,
-then run `bash scripts/release-windows.sh 1.1.4` with a new version. GitHub builds
+then run `bash scripts/release-windows.sh 1.1.5` with a new version. GitHub builds
 and publishes `Vastgame.zip` automatically from that exact tag. Account bundles,
 dependency downloads and local build workspaces are excluded. Review
 `packaging/windows/RELEASE-NOTES.md` before publishing. No VM is changed by release

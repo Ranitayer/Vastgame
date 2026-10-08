@@ -40,6 +40,7 @@ Vastgame — multi-game Vast cloud gaming manager
 
 In-game performance HUD (native Linux Moonlight):
   Ctrl+Alt+Shift+H                  Show/hide the top-left HUD
+  Ctrl+Alt+Shift+M                  Open stream settings menu (arrows, Enter, Escape)
   Alt+Tab                          Switch local windows during gameplay
   Session logs: ~/.local/state/vastgame/hud.*/metrics.jsonl
 
@@ -59,6 +60,9 @@ VM lifecycle:
   vastgame cleanup                  Preview expired, inactive local artifacts
   vastgame cleanup --apply          Remove previewed artifacts; preserve saves and releases
   vastgame update                   Install the latest Windows release; keep accounts/settings
+
+Stream settings apply on reconnect. The running game's virtual display follows
+the selected resolution; some games need restarting to refresh available modes.
 
 Game catalog:
   vastgame game add <folder> [id]   Detect an executable and create a manifest

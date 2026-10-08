@@ -2,6 +2,7 @@
 // Only used by Vastgame's native Moonlight process, never installed system-wide.
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include "stream_menu.h"
 #include <dlfcn.h>
 #include <atomic>
 #include <algorithm>
@@ -16,6 +17,9 @@
 
 static std::mutex mutex;
 static std::atomic<bool> visible{true};
+#ifdef VASTGAME_GLES_MENU
+static thread_local bool presenting_sdl = false;
+#endif
 static std::string root() {
     const char* dir = std::getenv("VASTGAME_HUD_DIR");
     return dir ? dir : "";
@@ -40,20 +44,48 @@ static bool shortcut(SDL_Event* event) {
 extern "C" int SDL_PollEvent(SDL_Event* event) {
     static auto real = reinterpret_cast<decltype(&SDL_PollEvent)>(dlsym(RTLD_NEXT, "SDL_PollEvent"));
     int result;
-    do { result = real(event); } while (result && shortcut(event));
+    do { result = real(event); } while (result && (shortcut(event) || stream_menu_event(event)));
     return result;
 }
 extern "C" int SDL_WaitEventTimeout(SDL_Event* event, int timeout) {
     static auto real = reinterpret_cast<decltype(&SDL_WaitEventTimeout)>(dlsym(RTLD_NEXT, "SDL_WaitEventTimeout"));
     int result = real(event, timeout);
-    if (result && shortcut(event)) { SDL_zero(*event); }
+    if (result && (shortcut(event) || stream_menu_event(event))) { SDL_zero(*event); }
     return result;
 }
 extern "C" int SDL_WaitEvent(SDL_Event* event) {
     static auto real = reinterpret_cast<decltype(&SDL_WaitEvent)>(dlsym(RTLD_NEXT, "SDL_WaitEvent"));
     int result = real(event);
-    if (result && shortcut(event)) { SDL_zero(*event); }
+    if (result && (shortcut(event) || stream_menu_event(event))) { SDL_zero(*event); }
     return result;
+}
+extern "C" void SDL_RenderPresent(SDL_Renderer* renderer) {
+    static auto real = reinterpret_cast<decltype(&SDL_RenderPresent)>(dlsym(RTLD_NEXT, "SDL_RenderPresent"));
+    stream_menu_present(renderer);
+#ifdef VASTGAME_GLES_MENU
+    presenting_sdl = true;
+#endif
+    real(renderer);
+#ifdef VASTGAME_GLES_MENU
+    presenting_sdl = false;
+#endif
+}
+#ifdef VASTGAME_GLES_MENU
+extern "C" void SDL_GL_SwapWindow(SDL_Window* window) {
+    static auto real = reinterpret_cast<decltype(&SDL_GL_SwapWindow)>(dlsym(RTLD_NEXT, "SDL_GL_SwapWindow"));
+    if (!presenting_sdl) stream_menu_gl_present(window);
+    real(window);
+}
+extern "C" void SDL_GL_DeleteContext(SDL_GLContext context) {
+    static auto real = reinterpret_cast<decltype(&SDL_GL_DeleteContext)>(dlsym(RTLD_NEXT, "SDL_GL_DeleteContext"));
+    stream_menu_gl_context_destroyed(context);
+    real(context);
+}
+#endif
+extern "C" void SDL_DestroyRenderer(SDL_Renderer* renderer) {
+    static auto real = reinterpret_cast<decltype(&SDL_DestroyRenderer)>(dlsym(RTLD_NEXT, "SDL_DestroyRenderer"));
+    stream_menu_renderer_destroyed(renderer);
+    real(renderer);
 }
 extern "C" SDL_Surface* TTF_RenderUTF8_Blended_Wrapped(TTF_Font* font, const char* text,
                                                        SDL_Color color, Uint32 wrap) {
@@ -85,7 +117,11 @@ extern "C" SDL_Surface* TTF_RenderUTF8_Blended_Wrapped(TTF_Font* font, const cha
     if (lines.empty()) lines = {{"VASTGAME · Connecting telemetry...", {101, 230, 172, 255}}};
     static TTF_Font* hudFont = nullptr;
     const char* setting = std::getenv("VASTGAME_HUD_SCALE");
-    const float scale = std::clamp(setting ? float(std::atof(setting)) : 1.f, 1.f, 2.f);
+    float dpi = 96;
+    int display = 0;
+    if (auto* window = SDL_GetKeyboardFocus()) display = std::max(0, SDL_GetWindowDisplayIndex(window));
+    if (SDL_GetDisplayDPI(display, &dpi, nullptr, nullptr) || dpi < 50) dpi = 96;
+    const float scale = std::clamp(setting ? float(std::atof(setting)) : dpi / 96, .85f, 1.8f);
     if (!hudFont) {
         const char* file = std::getenv("VASTGAME_HUD_FONT");
         if (file) hudFont = TTF_OpenFont(file, int(12 * scale));

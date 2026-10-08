@@ -12,6 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src/runtime'))
+sys.path.insert(0, str(ROOT / 'src/client'))
 import telemetry
 spec = importlib.util.spec_from_file_location('performance_hud', ROOT/'src/client/performance_hud.py')
 hud = importlib.util.module_from_spec(spec); spec.loader.exec_module(hud)
@@ -158,6 +159,22 @@ class MetricsTests(unittest.TestCase):
         metrics={}; hud.merge_vm_metrics(metrics,bad,meta,now=101)
         self.assertNotIn('game_fps',metrics); self.assertNotIn('gpu_pct',metrics)
 
+    def test_vm_feed_keeps_brief_gaps_and_labels_older_samples_without_scoring_them(self):
+        meta=dict(game_id='fixture',session_id='current')
+        feed=hud.VMFeed('100.64.0.1',meta,'unused')
+        packet=dict(meta,updated=100,game_fps=90,frametime_ms=11.1,gpu_pct=80)
+        self.assertTrue(feed.accept(packet,now=101))
+        self.assertFalse(feed.accept(dict(packet,session_id='other'),now=101))
+        live,display=feed.views(now=105)
+        self.assertEqual(live['game_fps'],90)
+        live,display=feed.views(now=109)
+        self.assertEqual(live,{})
+        self.assertEqual(display['game_fps'],90)
+        self.assertEqual(display['game_metrics_status'],'delayed')
+        self.assertIn('9s ago',display['game_metrics_note'])
+        self.assertNotIn('Game performance',hud.assess(live,90)['components'])
+        self.assertNotIn('game_fps',feed.views(now=131)[1])
+
     def test_collector_uses_isolated_folders_and_preserves_actual_game_fps(self):
         from unittest.mock import patch, Mock
         with tempfile.TemporaryDirectory() as tmp:
@@ -206,6 +223,23 @@ class MetricsTests(unittest.TestCase):
             (root/'wine-EpicWebHelper_2026.csv').write_text('fps,frametime\n999,1\n')
             sample=telemetry.mango_sample(root,'Expedition33_Steam.exe',0,related=names)
             self.assertEqual(sample['game_fps'],74)
+
+    def test_stream_menu_saves_valid_preferences_without_dropping_other_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); settings=root/'stream.json'
+            settings.write_text(json.dumps({'resolution':'native','fps':90,
+                'moonlight_options':{'performance-overlay':True,'frame-pacing':False}}))
+            (root/'menu.request').write_text('1920x1200|60|30|HEVC|true|false\n')
+            hud.apply_menu_request(root,settings)
+            saved=json.loads(settings.read_text())
+            self.assertEqual((saved['resolution'],saved['fps'],saved['bitrate_mbps']),('1920x1200',60,30))
+            self.assertTrue(saved['moonlight_options']['performance-overlay'])
+            self.assertFalse(saved['moonlight_options']['frame-pacing'])
+            self.assertEqual((root/'menu.status').read_text(),'Saved · reconnect to apply')
+            (root/'menu.request').write_text('0x0|60|30|HEVC|true|false\n')
+            hud.apply_menu_request(root,settings)
+            self.assertEqual(json.loads(settings.read_text()),saved)
+            self.assertEqual((root/'menu.status').read_text(),'Could not save stream settings')
 
     def test_invalid_csv_and_old_session_not_fps(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,10 +304,16 @@ int main(int argc,char** argv) {
     auto panel=render(); assert(panel && panel->w>300 && panel->h>150 && panel->h<250);
     Uint8 r,g,b,a; SDL_GetRGBA(((Uint32*)panel->pixels)[0],panel->format,&r,&g,&b,&a); assert(a==0);
     SDL_SaveBMP(panel,(std::string(argv[1])+"/preview.bmp").c_str()); SDL_FreeSurface(panel);
-    auto key=[&](SDL_Keycode code) { SDL_Event e{}; e.type=SDL_KEYDOWN; e.key.keysym.sym=code;
-      e.key.keysym.mod=KMOD_CTRL|KMOD_ALT|KMOD_SHIFT; SDL_PushEvent(&e); SDL_PollEvent(&e); };
+    auto key=[&](SDL_Keycode code,int mods=KMOD_LCTRL|KMOD_LALT|KMOD_LSHIFT) {
+      SDL_Event e{}; e.type=SDL_KEYDOWN; e.key.keysym.sym=code;
+      e.key.keysym.mod=mods; SDL_PushEvent(&e); SDL_PollEvent(&e); };
     key(SDLK_h); auto hidden=render(); assert(hidden && hidden->w==1 && hidden->h==1); SDL_FreeSurface(hidden);
     key(SDLK_h); auto full=render(); assert(full && full->h>150 && full->h<250); SDL_FreeSurface(full);
+    key(SDLK_m);
+    std::ifstream opened(std::string(argv[1])+"/menu.toggle"); std::string state; std::getline(opened,state);
+    assert(state=="open");
+    key(SDLK_m,KMOD_RCTRL|KMOD_RALT|KMOD_RSHIFT);
+    std::ifstream closed(std::string(argv[1])+"/menu.toggle"); std::getline(closed,state); assert(state=="closed");
     SDL_Event altTab{}; altTab.type=SDL_KEYDOWN; altTab.key.keysym.sym=SDLK_TAB; altTab.key.keysym.mod=KMOD_ALT;
     SDL_PushEvent(&altTab); SDL_Event received{}; assert(SDL_PollEvent(&received));
     assert(received.type==SDL_KEYDOWN && received.key.keysym.sym==SDLK_TAB);
@@ -281,8 +321,12 @@ int main(int argc,char** argv) {
 }
 ''')
             flags=subprocess.check_output(['pkg-config','--cflags','--libs','sdl2','SDL2_ttf'],text=True).split()
+            if subprocess.run(['pkg-config','--exists','glesv2']).returncode == 0:
+                flags += subprocess.check_output(['pkg-config','--cflags','--libs','glesv2'],text=True).split()
+                flags += ['-DVASTGAME_GLES_MENU']
             library=root/'hud.so'; executable=root/'test'
-            subprocess.run(['g++','-std=c++17','-shared','-fPIC',str(ROOT/'src/client/moonlight_hud.cpp'),'-o',str(library),*flags,'-ldl','-pthread'],check=True)
+            subprocess.run(['g++','-std=c++17','-shared','-fPIC',str(ROOT/'src/client/moonlight_hud.cpp'),
+                            str(ROOT/'src/client/stream_menu.cpp'),'-o',str(library),*flags,'-ldl','-pthread'],check=True)
             subprocess.run(['g++','-std=c++17',str(harness),'-o',str(executable),*flags],check=True)
             env=dict(os.environ,SDL_VIDEODRIVER='dummy',LD_PRELOAD=str(library),VASTGAME_HUD_DIR=str(root),
                      VASTGAME_HUD_FONT='/usr/share/fonts/TTF/DejaVuSans.ttf')

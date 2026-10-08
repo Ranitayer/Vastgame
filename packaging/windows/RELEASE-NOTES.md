@@ -1,10 +1,11 @@
-Vastgame 1.1.3 fixes VM game FPS collection and stream settings editing.
+Vastgame 1.1.4 updates game display resizing, stream controls, telemetry and import progress.
 
-- Lutris now launches the selected game through MangoHud. Its transparent collector avoids MangoHud versions where a hidden overlay prevents logging.
-- The collector accepts MangoHud's Wine game filenames and keeps game FPS separate from Moonlight stream FPS.
-- `vastgame streamedit` waits for the editor, validates the saved file, and confirms the selected resolution/FPS. The Windows editor opens the installed settings even when started from an extracted release folder.
-- The Windows ZIP carries these backend fixes. Windows stock Moonlight still shows its own stream statistics; the transparent Vastgame HUD runs on native Linux Moonlight.
+- Reconnecting to a running game applies the selected stream resolution to its Gamescope virtual screen. The operation verifies the VM and game session, uses Gamescope's built-in mode control, and leaves the active runtime, game settings and saves intact. Games that cache display modes may need a game restart. If resizing is unavailable, streaming continues with a warning.
+- Native Linux Moonlight gains the bottom-left stream menu, with the requested dark palette, centered button text and a working Ctrl+Alt+Shift+M shortcut. The HUD stays sized to the local display when stream resolution changes. Menu preferences use the existing stream settings file.
+- VM telemetry survives brief gaps and can use a verified SSH fallback when the status connection fails. Older readings show their age and do not enter performance scores.
+- Ingest upload progress uses the full measured archive size, overall percentage and an ETA for remaining bytes. A bounded local compression pass measures the total once and caches it for retries; previously verified chunks do not inflate upload speed.
+- The Windows ZIP includes the updated shared backend. Windows uses its native Moonlight overlay and the existing stream settings editor; the custom menu and transparent Vastgame HUD remain native Linux features.
 
-Install/update: download `Vastgame.zip`, extract it, then run `Vastgame.cmd` or `Update-Vastgame.cmd`. Existing installations can run `vastgame update`. Existing accounts, profiles, and stream settings are preserved.
+Install/update: download `Vastgame.zip`, extract it, then run `Vastgame.cmd` or `Update-Vastgame.cmd`. Existing installations can run `vastgame update`. Existing accounts, profiles and stream settings are preserved.
 
-No account keys, games, or saves are in the public ZIP. VM game FPS requires a new VM with the updated bootstrap. Existing VMs are not modified by the update. Syntax and package checks were performed; tests and fresh-VM gameplay were not run.
+No account credentials, games or saves are included in the public ZIP. Tests and extra validation were not run for this release at the user's request. Applying the client update does not restart or destroy an existing VM; display resizing is requested on the next stream connection.

@@ -140,24 +140,46 @@ edit_stream_settings() {
 
 prepare_performance_hud() {
     mkdir -p "$NATIVE_DIR"
-    local source="$CLIENT_DIR/moonlight_hud.cpp" library="$NATIVE_DIR/moonlight_hud.so"
-    [[ -f "$source" && -f "$CLIENT_DIR/performance_hud.py" ]] || return 1
-    if [[ ! -s "$library" || "$source" -nt "$library" ]]; then
+    local source="$CLIENT_DIR/moonlight_hud.cpp" menu="$CLIENT_DIR/stream_menu.cpp" header="$CLIENT_DIR/stream_menu.h" library="$NATIVE_DIR/moonlight_hud.so"
+    [[ -f "$source" && -f "$menu" && -f "$header" && -f "$CLIENT_DIR/performance_hud.py" && -f "$CLIENT_DIR/vm_telemetry.py" ]] || return 1
+    if [[ ! -s "$library" || "$source" -nt "$library" || "$menu" -nt "$library" || "$header" -nt "$library" ]]; then
         command -v g++ >/dev/null && command -v pkg-config >/dev/null || return 1
-        local -a flags
+        local -a flags gl_flags
         read -ra flags <<<"$(pkg-config --cflags --libs sdl2 SDL2_ttf)" || return 1
-        g++ -std=c++17 -O2 -Wall -Wextra -shared -fPIC "$source" -o "$library.tmp" "${flags[@]}" -ldl -pthread || return 1
+        if pkg-config --exists glesv2; then
+            read -ra gl_flags <<<"$(pkg-config --cflags --libs glesv2)"
+            flags+=("${gl_flags[@]}" -DVASTGAME_GLES_MENU)
+        fi
+        g++ -std=c++17 -O2 -Wall -Wextra -shared -fPIC "$source" "$menu" -o "$library.tmp" "${flags[@]}" -ldl -pthread || return 1
         mv "$library.tmp" "$library"
     fi
     printf '%s\n' "$library"
 }
+
+sync_game_resolution() (
+    local id="$1" game="$2" session="$3" resolution="$4" info label endpoint host port
+    local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
+    [[ "$resolution" =~ ^[0-9]+x[0-9]+$ && "$session" =~ ^[a-f0-9]{32}$ ]] || return 1
+    valid_game_id "$game" || return 1
+    info="$(instance_json "$id")" || return 1
+    jq -e --arg id "$id" '(.id|tostring) == $id' >/dev/null <<<"$info" || return 1
+    label="$(jq -r '.label // empty' <<<"$info")"
+    [[ "$label" =~ ^vastgame-[0-9]+$ ]] || return 1
+    endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
+    host="${endpoint%%$'\t'*}"; port="${endpoint#*$'\t'}"
+    timeout 20 ssh -F /dev/null -T -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
+        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" \
+        -p "$port" "root@$host" \
+        "python3 -c 'import sys; source=sys.stdin.read(); exec(source)' host $label $game $session $resolution" \
+        < "$RUNTIME_DIR/display_mode.py"
+)
 
 launch_moonlight() {
     local ip="$1"
     verify_peer_identity "$ip" || die "VM launch identity changed; refusing Moonlight connection"
     local list_out
     local rc
-    local app="" session="" session_id="" expected="" requested resolution refresh stream_config settings_path
+    local app="" session="" session_id="" expected="" requested launch_record resolution refresh stream_config stream_preference settings_path
     local -a ml game_options hud_environment
     local hud_library="" hud_directory="" host_info crash_directory="" moonlight_log="$STATEDIR/moonlight.log"
 
@@ -268,9 +290,11 @@ launch_moonlight() {
         return 1
     }
 
-    requested="$(curl -fsS --connect-timeout 2 --max-time 3 "http://$ip:$STATUS_PORT/launch.json" 2>/dev/null | jq -r '.updated // 0' || echo 0)"
+    launch_record="$(curl -fsS --connect-timeout 2 --max-time 3 "http://$ip:$STATUS_PORT/launch.json" 2>/dev/null || true)"
+    requested="$(jq -r '.updated // 0' <<<"$launch_record" 2>/dev/null || echo 0)"
     [[ "$requested" =~ ^[0-9]+([.][0-9]+)?$ ]] || requested=0
-    stream_config="$(read_stream_settings)" || die "Fix stream.json before connecting. VM retained."
+    stream_preference="$(read_stream_settings)" || die "Fix stream.json before connecting. VM retained."
+    stream_config="$stream_preference"
     resolution="$(jq -r '.resolution' <<<"$stream_config")"
     refresh="$(jq -r '.fps' <<<"$stream_config")"
     if [[ "$resolution" == native ]]; then
@@ -284,6 +308,12 @@ launch_moonlight() {
     resolution="$(jq -r '.resolution' <<<"$stream_config")"
     refresh="$(jq -r '.fps' <<<"$stream_config")"
     mapfile -t game_options < <(jq -r '.args[]' <<<"$stream_config")
+    # New games get their display size from Wolf; resumed Gamescope sessions retain the old size.
+    if [[ -n "$session_id" && "$(jq -r '.state // empty' <<<"$launch_record" 2>/dev/null)" =~ ^(running|starting)$ ]]; then
+        if ! sync_game_resolution "$(cat "$INSTANCE_FILE")" "$(jq -r '.game_id' <<<"$session")" "$session_id" "$resolution"; then
+            warn "Game display resize was not confirmed. Streaming continues; save and restart the game if higher modes remain unavailable."
+        fi
+    fi
     echo "Streaming '$app' from $ip at $resolution, $refresh FPS target..."
     echo "Video codec: $(jq -r '.video_codec' <<<"$stream_config"); bitrate: $(jq -r 'if .bitrate_mbps == null then "Moonlight default" else "\(.bitrate_mbps) Mbps" end' <<<"$stream_config")"
     [[ -z "$session_id" ]] || echo "Mouse mode: $(jq -r 'if .moonlight_options["absolute-mouse"] then "absolute" else "captured relative" end' <<<"$stream_config"); controller passthrough"
@@ -294,12 +324,20 @@ launch_moonlight() {
         host_info="$(instance_json "$(cat "$INSTANCE_FILE")" 2>/dev/null || echo '{}')"
         jq --argjson session "$session" --arg resolution "$resolution" --argjson fps "$refresh" \
             --arg key "${hud_directory##*/}" \
-            '{machine_id, instance_id: .id, game_id: $session.game_id, session_id: $session.session_id,
+            '.public_ipaddr as $public | {machine_id, instance_id: .id, label,
+              ssh_endpoints: ([{host: .ssh_host, port: .ssh_port},
+                (.ports["22/tcp"][]? | {host: $public, port: .HostPort})] |
+                map(select(.host != null and .port != null))),
+              game_id: $session.game_id, session_id: $session.session_id,
               resolution: $resolution, target_fps: $fps, session_key: $key}' <<<"$host_info" > "$hud_directory/host.json"
+        jq -r '[.resolution, (.fps | tostring),
+                (if .bitrate_mbps == null then "auto" else (.bitrate_mbps | tostring) end),
+                .video_codec, (.moonlight_options.vsync | if . == null then false else . end | tostring),
+                (.moonlight_options["frame-pacing"] | if . == null then true else . end | tostring)] | join("|")' \
+            <<<"$stream_preference" > "$hud_directory/menu.state"
         hud_environment=("LD_PRELOAD=$hud_library${LD_PRELOAD:+:$LD_PRELOAD}" "VASTGAME_HUD_DIR=$hud_directory"
-            'VASTGAME_HUD_FONT=/usr/share/fonts/TTF/DejaVuSans.ttf'
-            "VASTGAME_HUD_SCALE=$(awk -v h="${resolution#*x}" 'BEGIN {print h/1080}')")
-        echo "Performance HUD: full stats · Ctrl+Alt+Shift+H toggle · Alt+Tab switches local windows"
+            'VASTGAME_HUD_FONT=/usr/share/fonts/TTF/DejaVuSans.ttf')
+        echo "Performance HUD: Ctrl+Alt+Shift+H toggle · Ctrl+Alt+Shift+M stream menu · Alt+Tab local windows"
     elif [[ -n "$session_id" && "${VASTGAME_WINDOWS:-0}" == 1 ]]; then
         echo "Moonlight statistics: Ctrl+Alt+Shift+S toggle (native Windows overlay)"
     elif [[ -n "$session_id" && "$(jq -r '.moonlight_options["performance-overlay"]' <<<"$stream_config")" == true ]]; then
@@ -339,7 +377,8 @@ launch_moonlight() {
     fi
     if [[ -n "$hud_directory" ]]; then
         nohup python3 "$CLIENT_DIR/performance_hud.py" --directory "$hud_directory" --ip "$ip" \
-            --pid "$moonlight_pid" --fps "$refresh" --history "$HISTORY_FILE" \
+            --pid "$moonlight_pid" --fps "$refresh" --history "$HISTORY_FILE" --settings "$settings_path" \
+            --known-hosts "$STATEDIR/known_hosts.$(cat "$INSTANCE_FILE")" \
             > "$hud_directory/collector.log" 2>&1 8>&- &
     fi
     sleep 1

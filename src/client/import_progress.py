@@ -18,6 +18,7 @@ class Progress:
         self.label = 'Preparing import'
         self.done = 0; self.total = None; self.detail = ''
         self.transfers = {}; self.verified = set(); self.produced = {}
+        self.upload_active = False
         self.hidden = False
         self.thread = threading.Thread(target=self.refresh, daemon=True)
 
@@ -28,8 +29,15 @@ class Progress:
     def phase(self, label, total=None, done=0, detail=''):
         with self.lock:
             self.label, self.total, self.done, self.detail = label, total, done, detail
+            self.upload_active = False
             self.samples.clear()
             self.samples.append((time.monotonic(), done))
+
+    def begin_upload(self, total, detail=''):
+        with self.lock:
+            self.phase('4/6 Uploading game', total, detail=detail)
+            self.upload_active = True
+            self.transfers.clear(); self.verified.clear(); self.produced.clear()
 
     def advance(self, amount):
         with self.lock: self.done += amount
@@ -41,26 +49,26 @@ class Progress:
     def upload(self, name, size):
         with self.lock:
             self.transfers[name] = max(self.transfers.get(name, 0), min(size, self.produced[name]))
-            self.done = sum(self.transfers.values())
-            self.detail = f'Chunks verified {len(self.verified)}/{len(self.produced)}'
+            self.done = sum(amount if part in self.verified else self.transfers.get(part, 0)
+                            for part, amount in self.produced.items())
 
     def verify(self, name):
         with self.lock:
             self.verified.add(name)
-        self.upload(name, self.produced[name])
-
-    def upload_total(self):
-        with self.lock: self.total = sum(self.produced.values())
+            self.done = sum(amount if part in self.verified else self.transfers.get(part, 0)
+                            for part, amount in self.produced.items())
 
     def line(self, now):
         with self.lock:
             label, done, total, detail = self.label, self.done, self.total, self.detail
-            self.samples.append((now, done))
-            while len(self.samples) > 2 and now-self.samples[0][0] > 5:
+            measured = sum(self.transfers.values()) if self.upload_active else done
+            self.samples.append((now, measured))
+            while len(self.samples) > 2 and now-self.samples[0][0] > 20:
                 self.samples.popleft()
             first_time, first_done = self.samples[0]
-            packed = sum(self.produced.values()) if label == '4/6 Packaging / uploading' else 0
-        speed = max(0, done-first_done)/max(0.001, now-first_time)
+            verifying = self.upload_active and total is not None and done >= total and sum(
+                self.produced[name] for name in self.verified) < total
+        speed = max(0, measured-first_done)/max(0.001, now-first_time)
         elapsed = int(now-self.started)
         spinner = '|/-\\'[int(now*10) % 4]
         if total is not None:
@@ -68,15 +76,11 @@ class Progress:
             filled = min(16, int(percent*16/100))
             status = f'[{"#"*filled}{"-"*(16-filled)}] {percent:5.1f}%  {done/1024**3:.2f}/{total/1024**3:.2f} GiB'
             remaining = max(0, total-done)/speed if speed else None
-            eta = f'{int(remaining)//60}m {int(remaining)%60:02d}s' if remaining is not None else '--'
+            eta = f'~{int(remaining)//60}m {int(remaining)%60:02d}s' if remaining is not None else '--'
+            if verifying: eta = 'verifying upload'
         else:
             status = f'[{spinner}] {done/1024**3:.2f} GiB' if done else f'[{spinner}]'
-            eta = '-- (total pending)' if done else '--'
-            if packed:
-                percent = min(100, done*100/packed)
-                status = f'[{spinner}] {done/1024**3:.2f}/{packed/1024**3:.2f} GiB packed ({percent:.1f}%)'
-                remaining = max(0, packed-done)/speed if speed else None
-                eta = f'queued {int(remaining)//60}m {int(remaining)%60:02d}s; total pending' if remaining is not None else '-- (total pending)'
+            eta = '--'
         rate = f'{speed/1024**2:.1f} MiB/s' if speed else 'waiting'
         return f'{label} | {status} | {rate} | ETA {eta} | {elapsed//60}m {elapsed%60:02d}s' + (f' | {detail}' if detail else '')
 

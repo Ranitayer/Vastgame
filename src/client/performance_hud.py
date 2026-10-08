@@ -10,7 +10,7 @@ import re
 import statistics
 import subprocess
 import time
-import urllib.request
+from vm_telemetry import VMFeed, merge_vm_metrics
 
 
 def atomic(path, value):
@@ -48,20 +48,6 @@ def parse_moonlight(text):
     match = re.search(r'Video stream: (\d+x\d+) [\d.]+ FPS \(Codec: ([^)]+)\)', text)
     if match: data.update(resolution=match[1], codec=match[2])
     return data
-
-
-def merge_vm_metrics(metrics, vm, meta, now=None):
-    updated = vm.get('updated')
-    now = time.time() if now is None else now
-    if (not meta.get('session_id') or vm.get('game_id') != meta.get('game_id')
-            or vm.get('session_id') != meta['session_id'] or type(updated) not in (int, float)
-            or not math.isfinite(updated) or not 0 <= now-updated < 6):
-        return False
-    metrics.update({key: value for key, value in vm.items() if key not in ('schema', 'updated', 'source')
-                    and type(value) in (int, float) and math.isfinite(value) and value >= 0})
-    for key in ('game_metrics_source', 'game_metrics_status', 'game_metrics_note'):
-        if isinstance(vm.get(key), str): metrics[key] = ' '.join(vm[key].split())[:120]
-    return True
 
 
 def penalty(value, ideal, poor):
@@ -198,6 +184,34 @@ def append_metrics(path, sample):
         output.write(json.dumps(sample, allow_nan=False)+'\n')
 
 
+def apply_menu_request(directory, settings_path):
+    request = directory / 'menu.request'
+    processing = directory / 'menu.processing'
+    try: request.replace(processing)
+    except FileNotFoundError: return
+    staging = settings_path.with_name(settings_path.name + '.menu.tmp')
+    try:
+        if processing.stat().st_size > 1024: raise ValueError('Menu request is too large')
+        resolution, fps, bitrate, codec, vsync, pacing = processing.read_text().strip().split('|')
+        if vsync not in ('true', 'false') or pacing not in ('true', 'false'):
+            raise ValueError('Invalid switch value')
+        from stream_settings import read
+        settings = read(settings_path)
+        settings.update(resolution=resolution, fps=fps if fps == 'native' else int(fps),
+                        bitrate_mbps=None if bitrate == 'auto' else int(bitrate), video_codec=codec)
+        settings['moonlight_options'].update(vsync=vsync == 'true', **{'frame-pacing': pacing == 'true'})
+        staging.write_text(json.dumps(settings, indent=2) + '\n')
+        read(staging)  # Apply the same validation used by streamedit and launch.
+        staging.replace(settings_path)
+        atomic(directory / 'menu.status', 'Saved · reconnect to apply')
+    except (OSError, ValueError, TypeError) as exc:
+        atomic(directory / 'menu.status', 'Could not save stream settings')
+        print('Stream menu save failed: ' + str(exc), flush=True)
+    finally:
+        processing.unlink(missing_ok=True)
+        staging.unlink(missing_ok=True)
+
+
 def run(args):
     directory = Path(args.directory)
     meta = read_json(directory / 'host.json')
@@ -206,24 +220,22 @@ def run(args):
     probes, samples = deque(maxlen=60), deque(maxlen=1800)
     started, last_route, last_history = time.monotonic(), 0, time.monotonic()
     route_name = 'unknown'
+    feed = VMFeed(args.ip, meta, args.known_hosts).start()
     # Fresh file per stream prevents old telemetry being shown on reconnect.
     log = directory / 'metrics.jsonl'
     try:
         while process_identity(args.pid) == identity:
             tick = time.monotonic()
+            apply_menu_request(directory, Path(args.settings))
             m = {}
             raw = directory / 'moonlight.txt'
             try:
                 if 0 <= time.time() - raw.stat().st_mtime < 5:
                     m.update(parse_moonlight(raw.read_text()[:8192]))
             except OSError: pass
-            try:
-                with urllib.request.urlopen(f'http://{args.ip}:48199/performance.json', timeout=1) as response:
-                    vm = json.loads(response.read(16384))
-                if not merge_vm_metrics(m, vm, meta):
-                    m['game_metrics_note'] = 'Waiting for current VM telemetry'
-            except (OSError, ValueError):
-                m['game_metrics_note'] = 'VM telemetry temporarily unavailable'
+            vm, vm_display = feed.views()
+            m.update(vm)
+            if not vm: m['game_metrics_note'] = vm_display['game_metrics_note']
             try:
                 result = subprocess.run(['ping', '-n', '-c', '1', '-W', '1', args.ip],
                                         capture_output=True, text=True, timeout=2)
@@ -243,11 +255,13 @@ def run(args):
             sample = {'updated': time.time(), 'metrics': m, 'quality': quality}
             samples.append(sample); append_metrics(log, sample)
             atomic(directory / 'latest.json', json.dumps(sample, allow_nan=False))
-            atomic(directory / 'hud.txt', '\n'.join(hud_lines(m, quality, args.fps)))
+            # Older VM samples are labeled in the display, never scored or stored as live metrics.
+            atomic(directory / 'hud.txt', '\n'.join(hud_lines({**vm_display, **m}, quality, args.fps)))
             if tick - last_history >= 60:
                 save_history(Path(args.history), meta, list(samples)); last_history = tick
             time.sleep(max(.1, 1 - (time.monotonic() - tick)))
     finally:
+        feed.close()
         if time.monotonic() - started >= 60:
             save_history(Path(args.history), meta, list(samples))
 
@@ -259,6 +273,8 @@ if __name__ == '__main__':
     parser.add_argument('--pid', type=int, required=True)
     parser.add_argument('--fps', type=int, required=True)
     parser.add_argument('--history', required=True)
+    parser.add_argument('--settings', required=True)
+    parser.add_argument('--known-hosts', required=True)
     arguments = parser.parse_args()
     if not 10 <= arguments.fps <= 1000: parser.error('Invalid stream FPS')
     run(arguments)

@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -77,6 +78,25 @@ def compressed_parts(root, work, digest, chunk_bytes=CHUNK_BYTES):
             except subprocess.TimeoutExpired:
                 process.kill(); process.wait()
         compressor.stdout.close()
+
+
+def archive_format():
+    return [subprocess.check_output([tool, '--version'], text=True).splitlines()[0]
+            for tool in ('tar', 'zstd')]
+
+
+def measure_package(source, work, progress):
+    digest = hashlib.sha256(); size = 0
+    with tempfile.TemporaryDirectory(prefix='measure-', dir=work) as tmp:
+        iterator = compressed_parts(source, Path(tmp), digest)
+        try:
+            for path, part, _ in iterator:
+                size += part['size']
+                progress.advance(part['size'])
+                path.unlink()
+        finally:
+            iterator.close()
+    return dict(size=size, sha256=digest.hexdigest())
 
 
 def remote_md5(remote):
@@ -181,8 +201,22 @@ def _publish(manifest, source, work, remote, imported, progress):
     # Separate Drive processes can otherwise create duplicate parent folders concurrently.
     progress.phase('4/6 Preparing upload folder')
     prepare_upload_folder(remote, m['id'])
+    game_size = f'Game size {unpacked/1024**3:.2f} GiB'
+    format_version = archive_format()
+    measured = journal.get('measurement', {})
+    if (not isinstance(measured, dict) or measured.get('format') != format_version
+            or type(measured.get('size')) is not int or measured['size'] <= 0
+            or not isinstance(measured.get('sha256'), str)
+            or not re.fullmatch('[0-9a-f]{64}', measured['sha256'])):
+        progress.phase('4/6 Measuring full upload size', detail=game_size)
+        measured = measure_package(source, work, progress)
+        if not measured['size'] or inventory(source) != before:
+            raise ValueError('Game source changed while measuring; manifest unchanged')
+        measured['format'] = format_version
+        journal['measurement'] = measured
+        atomic(journal_path, journal)
     digest = hashlib.sha256(); parts = []; pending = deque()
-    progress.phase('4/6 Packaging / uploading', detail='Compressed total pending; bounded workspace')
+    progress.begin_upload(measured['size'], detail=game_size)
 
     def finish():
         future, path = pending.popleft()
@@ -199,9 +233,7 @@ def _publish(manifest, source, work, remote, imported, progress):
                 while True:
                     if len(pending) == 2: finish()
                     try: path, part, md5 = next(iterator)
-                    except StopIteration:
-                        progress.upload_total()
-                        break
+                    except StopIteration: break
                     part['object'] = f'games/{m["id"]}/objects/{part["sha256"]}.part'
                     parts.append(part)
                     progress.part(part['name'], part['size'])
@@ -214,6 +246,10 @@ def _publish(manifest, source, work, remote, imported, progress):
     if not parts or inventory(source) != before:
         raise ValueError('Game source changed while packaging; previous manifest retained')
     sha = digest.hexdigest(); base = f'games/{m["id"]}/{sha}'
+    if sum(part['size'] for part in parts) != measured['size'] or sha != measured['sha256']:
+        journal.pop('measurement', None)
+        atomic(journal_path, journal)
+        raise ValueError('Archive differs from its measured size or checksum; manifest unchanged. Retry to remeasure')
     m.setdefault('version', 'v1')
     m['package'] = dict(version=sha, archive=base+'/game.tar.zst', checksum=base+'/game.tar.zst.sha256',
                         sha256=sha, size=sum(p['size'] for p in parts), unpacked_bytes=unpacked, parts=parts)
