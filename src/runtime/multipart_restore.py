@@ -26,12 +26,16 @@ def package_parts(manifest):
     if not isinstance(parts, list) or not parts:
         raise ValueError('Missing package parts')
     for index, part in enumerate(parts):
+        if not isinstance(part, dict) or '_remote' in part:
+            raise ValueError('Invalid package part metadata')
         if part.get('name') != f'part-{index:05d}':
             raise ValueError('Package parts must be consecutive and ordered')
         if not re.fullmatch('[a-f0-9]{64}', part.get('sha256', '')):
             raise ValueError('Invalid part checksum')
         if type(part.get('size')) is not int or part['size'] <= 0:
             raise ValueError('Invalid part size')
+        if 'object' in part and part['object'] != f'games/{manifest["id"]}/objects/{part["sha256"]}.part':
+            raise ValueError('Unsafe package object path')
     if type(package.get('size')) is not int or sum(p['size'] for p in parts) != package['size']:
         raise ValueError('Package sizes do not match')
     return parts
@@ -102,7 +106,7 @@ class Downloads:
             with self.progress.lock:
                 self.progress.received[index] = 0
             with tempfile.TemporaryFile() as errors:
-                command = ['rclone', 'cat', self.remote + '/' + part['name'],
+                command = ['rclone', 'cat', part.get('_remote', self.remote + '/' + part['name']),
                            '--retries', '1', '--low-level-retries', '3',
                            '--contimeout', '10s', '--timeout', '30s']
                 if self.config:
@@ -142,6 +146,12 @@ class Downloads:
 
 def restore(manifest, checksum, root, remote, config=None, status=None, workers=8):
     parts = package_parts(manifest)
+    if any('object' in p for p in parts):
+        suffix = str(Path(manifest['package']['archive']).parent)+'/parts'
+        if not remote.endswith(suffix):
+            raise ValueError('Package object root differs from the selected package')
+        prefix = remote[:-len(suffix)]
+        parts = [dict(p, _remote=prefix+p['object']) if 'object' in p else dict(p) for p in parts]
     expected = checksum.split()[0] if checksum.split() else ''
     if not re.fullmatch('[a-f0-9]{64}', expected):
         raise ValueError('Invalid archive checksum')

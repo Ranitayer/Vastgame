@@ -17,6 +17,7 @@ bold "Stage 1/3 — Creating Vast VM"
 echo "Submitting selected offer directly to Vast..."
 if [[ -s "$CFGDIR/core-image.json" ]]; then
     echo "Using the pinned prebuilt Core VM image."
+    warn "Custom image guest launch is not verified on Vast; the previous trial failed before Tailscale."
 fi
 
 # The full bootstrap has grown beyond Vast's request-size limit.
@@ -65,14 +66,8 @@ create_out="$(
         timeout --foreground 90s python3 "$APP_ROOT/src/manager/create_vm.py" \
             "$CFGDIR/core-image.json" "$TEMPLATE_HASH" "$offer_id" "$DISK_GB" "$label" "$packed_onstart"
     else
-        timeout --foreground 90s vastai create instance "$offer_id" \
-            --template_hash "$TEMPLATE_HASH" \
-            --onstart "$packed_onstart" \
-            --disk "$DISK_GB" \
-            --ssh \
-            --direct \
-            --label "$label" \
-            --cancel-unavail
+        timeout --foreground 90s python3 "$APP_ROOT/src/manager/create_vm.py" \
+            - "$TEMPLATE_HASH" "$offer_id" "$DISK_GB" "$label" "$packed_onstart"
     fi 2>&1
 )"
 
@@ -244,7 +239,7 @@ while true; do
             "Could not read Vast status ($api_errors/5)"
 
         (( api_errors < 5 )) ||
-            destroy_failed_prompt \
+            pause_boot_wait \
                 "$instance_id" \
                 "Vast status API failed repeatedly."
 
@@ -266,6 +261,9 @@ while true; do
 
     print_vast_progress "$actual" "$msg" "$e"
     check_instance_failure "$instance_id" "$info"
+    if [[ "$actual" != running ]]; then
+        check_startup_logs "$instance_id" "$info" vast_wait_frame
+    fi
 
     if [[ "$actual" == running ]]; then
         progress_clear
@@ -274,7 +272,7 @@ while true; do
     fi
 
     (( e < VAST_START_TIMEOUT )) ||
-        destroy_failed_prompt \
+        pause_boot_wait \
             "$instance_id" \
             "Vast did not reach running within $(elapsed "$VAST_START_TIMEOUT")."
 

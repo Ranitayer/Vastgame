@@ -10,7 +10,8 @@ ordered stream into extraction and deletes consumed inputs. The game is
 published only after the whole compressed stream, executable and working
 directory pass validation. Progress reports download/extraction separately;
 transfer ETA excludes final checks. Terminal panels and spinners redraw every
-half-second even while status requests are slow. Provider queries retain their
+0.1 seconds even while status requests are slow. Rendering time is included in
+the frame schedule; slower terminals may display fewer frames. Provider queries retain their
 normal cadence; animation never invents download measurements. Completed progress retains measured total
 restore throughput and exact machine/launch identity for host history.
 
@@ -50,3 +51,12 @@ Source updates apply to future VM setup. Existing VMs keep their deployed
 bootstrap; the final backup command can deploy updated state helpers safely.
 Windows releases require rebuilding from source. No live GPU/Windows test is
 implied by passing offline regression tests.
+
+Game launch waits up to five minutes for a checkpoint or restore to release the
+state lock. It reports the wait in launch status. Final-backup markers still
+block launch immediately; lock files are never deleted to bypass persistence.
+
+Boot, Tailscale and restore use a single in-place terminal line. Redirected
+restore logs record stage/action/percentage changes rather than repeating
+completed tasks or elapsed-time updates. This also avoids scrollback duplication
+in short terminal windows.

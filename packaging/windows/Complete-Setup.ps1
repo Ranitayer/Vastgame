@@ -30,7 +30,9 @@ try {
     if ($requirements.status -eq 'restart') {
         $resume = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
         New-Item -Path $resume -Force | Out-Null
-        New-ItemProperty -Path $resume -Name VastgameSetup -Value "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$app\Complete-Setup.ps1`"" -PropertyType String -Force | Out-Null
+        $resumeScript = 'Complete-Setup.ps1'
+        if (Test-Path -LiteralPath (Join-Path $app 'release.json')) { $resumeScript = 'Install-Vastgame.ps1' }
+        New-ItemProperty -Path $resume -Name VastgameSetup -Value "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$app\$resumeScript`"" -PropertyType String -Force | Out-Null
         Write-Host $requirements.message -ForegroundColor Yellow
         Add-Type -AssemblyName System.Windows.Forms
         [Windows.Forms.MessageBox]::Show($requirements.message + "`n`nSave your work and restart Windows. Setup will resume after you sign in; you can also open Complete Vastgame Setup from Start.", 'Vastgame: restart required', 'OK', 'Information') | Out-Null
@@ -42,7 +44,9 @@ try {
         Write-Host 'Enabling WSL 2. Windows may request administrator approval and a reboot.'
         $resume = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
         New-Item -Path $resume -Force | Out-Null
-        New-ItemProperty -Path $resume -Name VastgameSetup -Value "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$app\Complete-Setup.ps1`"" -PropertyType String -Force | Out-Null
+        $resumeScript = 'Complete-Setup.ps1'
+        if (Test-Path -LiteralPath (Join-Path $app 'release.json')) { $resumeScript = 'Install-Vastgame.ps1' }
+        New-ItemProperty -Path $resume -Name VastgameSetup -Value "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$app\$resumeScript`"" -PropertyType String -Force | Out-Null
         $enable = Start-Process -FilePath 'wsl.exe' -Verb RunAs -ArgumentList '--install --no-distribution --web-download' -Wait -PassThru
         if ($enable.ExitCode -notin @(0, 3010, 1641)) { throw "WSL installation failed (exit $($enable.ExitCode)). Enable virtualization in your PC firmware if Windows reports it is unavailable." }
         if ($enable.ExitCode -in @(3010, 1641)) { throw 'Windows requested a restart to finish installing WSL. Restart Windows, then open Complete Vastgame Setup.' }

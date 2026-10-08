@@ -14,8 +14,87 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 WINDOWS=ROOT/'packaging/windows'
-spec=importlib.util.spec_from_file_location('windows_builder',WINDOWS/'build_installer.py')
+spec=importlib.util.spec_from_file_location('windows_builder',WINDOWS/'export_accounts.py')
 builder=importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+update_spec=importlib.util.spec_from_file_location('windows_update',WINDOWS/'build_update.py')
+updater=importlib.util.module_from_spec(update_spec); update_spec.loader.exec_module(updater)
+
+
+class WindowsUpdateTests(unittest.TestCase):
+    def test_windows_bridge_preserves_configured_codec_and_pairing_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); moonlight=root/'Moonlight'; moonlight.mkdir()
+            executable=moonlight/'Moonlight.exe'
+            executable.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+            executable.chmod(0o755)
+            config=root/'windows.json'; config.write_text(json.dumps({'application':str(root)}))
+            bridge=root/'moonlight'; bridge.write_bytes((WINDOWS/'windows-bridge.sh').read_bytes())
+            for arguments,expected in [
+                (['stream','--video-codec','HEVC','--resolution','1920x1080','100.1.2.3','Vastgame - cyberpunk'],
+                 ['stream','--video-codec','HEVC','--resolution','1920x1080','100.1.2.3','Vastgame - cyberpunk']),
+                (['list','100.1.2.3'],['list','100.1.2.3']),
+            ]:
+                env=dict(os.environ,XDG_CONFIG_HOME=str(root))
+                (root/'vastgame').mkdir(exist_ok=True)
+                (root/'vastgame/windows.json').write_bytes(config.read_bytes())
+                result=subprocess.run(['bash',str(bridge),*arguments],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(result.stdout.splitlines(),expected)
+
+    def test_public_package_needs_no_local_game_or_accounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output=Path(tmp)/'Vastgame.zip'
+            updater.build(output,'1.1.0',commit='a'*40)
+            with zipfile.ZipFile(output) as archive:
+                names=archive.namelist()
+                self.assertIn('Vastgame/Install-Vastgame.ps1',names)
+                self.assertIn('Vastgame/Check-Updates.ps1',names)
+                self.assertFalse(any('accounts.tar' in n or 'cyberpunk.json' in n for n in names))
+                release=json.loads(archive.read('Vastgame/release.json'))
+                self.assertEqual(release['version'],'1.1.0')
+                import hashlib
+                for name,digest in release['files'].items():
+                    self.assertEqual(hashlib.sha256(archive.read('Vastgame/'+name)).hexdigest(),digest)
+                with tarfile.open(fileobj=io.BytesIO(archive.read('Vastgame/backend.tar.gz'))) as backend:
+                    self.assertIn('src/client/ludusavi.json.gz', backend.getnames())
+                    self.assertIn('src/client/LUDUSAVI-LICENSE', backend.getnames())
+                    self.assertIn('src/providers/vast/rank.jq', backend.getnames())
+
+    def test_update_preserves_settings_and_rolls_back_backend_on_copy_failure(self):
+        spec=importlib.util.spec_from_file_location('apply_update',WINDOWS/'apply_update.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); home=root/'home'; app=root/'windows'; bundle=root/'bundle'
+            (app/'Moonlight').mkdir(parents=True);(app/'Moonlight/Moonlight.exe').touch()
+            for name in ('.config/vastai/vast_api_key','.config/rclone/rclone.conf','.config/vastgame/template_hash'):
+                path=home/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('private fixture')
+            backend=home/'.local/share/vastgame/app/bin/vastgame';backend.parent.mkdir(parents=True)
+            backend.write_text('previous backend')
+            (app/'stream.json').write_text('{"fps":90}')
+            ts=root/'tailscale';ts.touch();ps=root/'powershell';ps.touch()
+            output=root/'Vastgame.zip';updater.build(output,'1.1.0',commit='a'*40)
+            with zipfile.ZipFile(output) as archive: archive.extractall(bundle)
+            original_replace=module.replace
+            def failing(path,content,mode=0o600):
+                if path == home/'.local/bin/moonlight': raise OSError('simulated file failure')
+                return original_replace(path,content,mode)
+            with patch.object(module,'replace',side_effect=failing):
+                with self.assertRaises(OSError): module.apply(home,bundle/'Vastgame',app,ts,ps)
+            self.assertEqual(backend.read_text(),'previous backend')
+            self.assertEqual((app/'stream.json').read_text(),'{"fps":90}')
+            self.assertEqual((home/'.config/vastai/vast_api_key').read_text(),'private fixture')
+
+    def test_update_and_ingestion_share_catalog_lock(self):
+        source=(WINDOWS/'apply_update.py').read_text()
+        self.assertIn("('lifecycle.lock', 'catalog.lock')",source)
+        self.assertNotIn('cyberpunk',source)
+
+    def test_installed_shortcut_fetches_updates_and_existing_setup_routes_through_updater(self):
+        shortcut=(WINDOWS/'Update-Vastgame.cmd').read_text()
+        self.assertIn('if exist "%~dp0ready"',shortcut)
+        self.assertIn('Check-Updates.ps1',shortcut)
+        setup=(WINDOWS/'Install-Vastgame.ps1').read_text()
+        self.assertLess(setup.index("'Update-Vastgame.ps1'"),setup.index('Copy-Item'))
 
 
 class WindowsInstallerTests(unittest.TestCase):
@@ -27,49 +106,6 @@ class WindowsInstallerTests(unittest.TestCase):
         for name in ('.config/vastai/vast_api_key','.config/rclone/rclone.conf','.config/vastgame/template_hash','.ssh/id_ed25519','.ssh/id_ed25519.pub'):
             path=self.home/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture secret')
 
-    def test_staged_backend_includes_offline_save_catalog_and_license(self):
-        self.credentials()
-        assets = self.home/'assets'; assets.mkdir()
-        (assets/'tailscale.msi').write_bytes(b'fixture')
-        with zipfile.ZipFile(assets/'moonlight.zip', 'w') as archive:
-            archive.writestr('Moonlight.exe', b'fixture')
-        with tarfile.open(assets/'ubuntu-root.tar.xz', 'w:xz') as archive:
-            builder.add_bytes(archive, 'etc/fixture', b'fixture')
-        for name in ('.local/bin/vastgame', '.config/vastgame/vast-gaming-start-v2.sh',
-                     '.config/Moonlight Game Streaming Project/Moonlight.conf'):
-            path=self.home/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(b'fixture')
-        (self.home/'.config/vastgame/runtime').mkdir()
-        client=self.home/'.config/vastgame/client'; client.mkdir()
-        (client/'ludusavi.json.gz').write_bytes(b'offline catalog')
-        (client/'LUDUSAVI-LICENSE').write_bytes(b'upstream license')
-        with patch.object(builder,'checked'):
-            builder.stage(self.home,assets,self.home/'payload','fixture-tailnet')
-        with tarfile.open(self.home/'payload/backend.tar') as archive:
-            self.assertEqual(archive.extractfile('.local/share/vastgame/app/src/client/ludusavi.json.gz').read(),(ROOT/'src/client/ludusavi.json.gz').read_bytes())
-            self.assertEqual(archive.extractfile('.local/share/vastgame/app/src/client/LUDUSAVI-LICENSE').read(),(ROOT/'src/client/LUDUSAVI-LICENSE').read_bytes())
-            staged=self.home/'staged-home'; staged.mkdir()
-            archive.extractall(staged,filter='data')
-        app=staged/'.local/share/vastgame/app'
-        self.assertEqual((app/'bin/vastgame').read_bytes(),(ROOT/'bin/vastgame').read_bytes())
-        self.assertTrue((app/'src/providers/vast/rank.jq').is_file())
-        for path in (ROOT/'src/manager').glob('*.sh'):
-            self.assertEqual((app/'src/manager'/path.name).read_bytes(),path.read_bytes())
-        env=dict(os.environ,HOME=str(staged),VASTGAME_WINDOWS='1')
-        for name in ('XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CACHE_HOME'):
-            env.pop(name,None)
-        result=subprocess.run([str(app/'bin/vastgame'),'help'],env=env,capture_output=True,text=True)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('vastgame start <game-id>',result.stdout)
-        self.assertNotIn(str(ROOT), result.stdout)
-        # The deployed dispatcher must reach the packaged Python helpers as well.
-        source=staged/'Game'; source.mkdir(); (source/'Game.exe').touch()
-        manifest=staged/'.config/vastgame/games/fixture/manifest.json'
-        manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps({'schema':1,'id':'fixture','name':'Game',
-            'source':{'path':str(source)},'game':{'executable':'Game.exe'}}))
-        for args in (['inspect','fixture'],['game','validate','fixture']):
-            result=subprocess.run([str(app/'bin/vastgame'),*args],env=env,capture_output=True,text=True)
-            self.assertEqual(result.returncode,0,result.stderr)
 
 
     def test_only_required_personal_configuration_is_exported(self):
@@ -110,19 +146,6 @@ foreach ($distroOutput in @("Ubuntu`0`r`0`n`0Vastgame`0`r`0`n`0", "Ubuntu`r`nVas
         self.assertEqual([json.loads(line) for line in result.stdout.splitlines()],
                          [['Ubuntu','Vastgame'],['Ubuntu','Vastgame'],[]])
 
-    def test_cloud_image_dns_is_replaced_with_wsl_generation(self):
-        source=self.home/'ubuntu.tar.xz'; target=self.home/'wsl.tar.gz'
-        with tarfile.open(source,'w:xz') as archive:
-            link=tarfile.TarInfo('etc/resolv.conf'); link.type=tarfile.SYMTYPE
-            link.linkname='../run/systemd/resolve/stub-resolv.conf';archive.addfile(link)
-            builder.add_bytes(archive,'etc/example',b'preserve official files')
-        builder.prepare_wsl_root(source,target)
-        with tarfile.open(target,'r:gz') as archive:
-            self.assertNotIn('etc/resolv.conf',archive.getnames())
-            conf=archive.extractfile('etc/wsl.conf').read()
-            self.assertIn(b'generateResolvConf=true',conf)
-            self.assertIn(b'systemd=false',conf)
-            self.assertEqual(archive.extractfile('etc/example').read(),b'preserve official files')
 
     def test_windows_prerequisite_repairs_and_restart_gate_execute(self):
         pwsh = shutil.which('pwsh') or str(Path.home()/'.local/state/vastgame/windows-build/powershell/pwsh')
@@ -275,7 +298,7 @@ printf '%s\\n' "$list_out"
 
     def test_windows_screen_detection_bypasses_linux_desktop(self):
         cli=cli_source()
-        helper=cli[cli.index('native_screen_resolution() {'):cli.index('\nmoonlight_game_options()')]
+        helper=cli[cli.index('native_screen_resolution() {'):cli.index('\nstream_settings_file()')]
         code='VASTGAME_WINDOWS=1; vastgame-native() { case "$1" in resolution) echo 3840x2160;; refresh) echo 120;; esac; }; '+helper+'\nnative_screen_resolution; native_screen_refresh'
         result=subprocess.run(['bash','-e','-c',code],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -285,9 +308,10 @@ printf '%s\\n' "$list_out"
         backend=self.home/'.local/share/vastgame/app/bin/vastgame'; backend.parent.mkdir(parents=True)
         backend.write_text('#!/usr/bin/env python3\nimport sys,json;print(json.dumps(sys.argv[1:]))\n'); backend.chmod(0o755)
         bindir=self.home/'bin'; bindir.mkdir()
+        account=bindir/'getent'; account.write_text('#!/bin/sh\nprintf \'vastgame:x:1000:1000::%s:/bin/bash\\n\' \"$FIXTURE_HOME\"\n'); account.chmod(0o755)
         translate=bindir/'wslpath';translate.write_text('#!/usr/bin/env python3\nimport sys;print("/mnt/"+sys.argv[2][0].lower()+sys.argv[2][2:].replace(chr(92),"/"))\n');translate.chmod(0o755)
         result=subprocess.run(['bash',str(WINDOWS/'run-vastgame.sh'),'add',r'D:\Games\My Game','$(literal)'],
-            env=dict(os.environ,HOME=str(self.home),PATH=str(bindir)+':'+os.environ['PATH']),capture_output=True,text=True)
+            env=dict(os.environ,HOME=str(self.home),FIXTURE_HOME=str(self.home),PATH=str(bindir)+':'+os.environ['PATH']),capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout),['add','/mnt/d/Games/My Game','$(literal)'])
 
@@ -300,14 +324,6 @@ printf '%s\\n' "$list_out"
         self.assertIn('rclone lsd gdrive:VastGaming',setup)
         self.assertIn('CurrentTailnet.Name',setup)
 
-    def test_installer_encryption_and_safe_default_setup(self):
-        script=(WINDOWS/'installer.iss').read_text()
-        self.assertIn('Encryption=yes',script)
-        self.assertIn('Password={#InstallerPassword}',script)
-        self.assertIn('EncryptionKeyDerivation=pbkdf2/600000',script)
-        self.assertIn('PrivilegesRequired=lowest',script)
-        self.assertNotIn('postinstall unchecked',script)
-        self.assertIn("'--import', 'Vastgame'",(WINDOWS/'Complete-Setup.ps1').read_text())
 
 
 if __name__=='__main__': unittest.main()

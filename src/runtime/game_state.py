@@ -55,7 +55,12 @@ def runner_builds(gid, container=False):
 
 
 def cache_context(m):
-    gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=name,driver_version', '--format=csv,noheader'], text=True, timeout=20).strip()
+    try:
+        gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=name,driver_version', '--format=csv,noheader'], text=True, stderr=subprocess.DEVNULL, timeout=20).strip() or None
+    except (OSError, subprocess.SubprocessError):
+        gpu = None
+    if gpu is None:
+        print('GPU identity unavailable; saves/configs will still persist. Shader caches will require a known matching GPU before reuse.', flush=True)
     return dict(gpu_driver=gpu, runner=m.get('runner', {}), builds=runner_builds(m['id']),
                 game_version=m.get('version', 'v1'), package=m.get('package', {}).get('sha256', m.get('package', {}).get('parts', [])), schema=1)
 
@@ -365,6 +370,9 @@ def restore(m, root, remote, cache_key, context=None, defer_shaders=False):
                 raise ValueError('Invalid archive checksum')
             key = artifact.get('cache_key')
             defer = False
+            if kind == 'shaders' and context is not None and not context.get('gpu_driver'):
+                print('GPU identity unavailable; shader cache reuse skipped', flush=True)
+                continue
             if kind == 'shaders' and key != cache_key:
                 prior_context = artifact.get('context')
                 if defer_shaders and context and prior_context and {k:v for k,v in context.items() if k != 'builds'} == {k:v for k,v in prior_context.items() if k != 'builds'}:
@@ -433,7 +441,13 @@ def containers(gid):
 def idle(gid):
     # Require all processes using this exact Wine prefix to exit, not just the EXE.
     for container in containers(gid):
-        subprocess.run(['docker', 'exec', container, 'python3', '/opt/vastgame/game_state.py', 'idle', gid], check=True, timeout=15)
+        container_state(container, 'idle', gid)
+
+
+def container_state(container, action, gid):
+    # Run the matching state helper through stdin; never replace a live container's code.
+    subprocess.run(['docker', 'exec', '-i', container, 'python3', '-', action, gid],
+                   input=Path(__file__).read_bytes(), check=True, timeout=15)
 
 
 def container_idle(gid):
@@ -529,7 +543,7 @@ def close_windows(gid):
 
 def stop_cleanly(gid):
     for container in containers(gid):
-        subprocess.run(['docker', 'exec', container, 'python3', '/opt/vastgame/game_state.py', 'close', gid], check=True, timeout=15)
+        container_state(container, 'close', gid)
     deadline = time.monotonic() + 120
     while True:
         try:
@@ -575,12 +589,14 @@ def prepare_shaders(gid):
     print('Matching compiled shader cache restored before Wine launch', flush=True)
 
 
-def wait_for_state_lock(lock, timeout=30):
+def wait_for_state_lock(lock, timeout=30, mode=fcntl.LOCK_EX, stopping=None, report=None):
     deadline = time.monotonic() + timeout
     reported = False
     while True:
+        if stopping is not None and stopping.exists():
+            raise RuntimeError('Final backup in progress; game launch blocked')
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, mode | fcntl.LOCK_NB)
             return
         except BlockingIOError:
             remaining = deadline - time.monotonic()
@@ -588,7 +604,10 @@ def wait_for_state_lock(lock, timeout=30):
                 raise RuntimeError(f'State lock still busy after {timeout:g}s: another game launch, '
                                    'backup or restore is active. VM retained; wait for it to finish and retry.') from None
             if not reported:
-                print('Waiting for active game launch or state operation to release the state lock...', flush=True)
+                if report:
+                    report('Waiting for save/config backup or restore to finish')
+                else:
+                    print('Waiting for active game launch or state operation to release the state lock...', flush=True)
                 reported = True
             time.sleep(min(0.2, remaining))
 
@@ -598,15 +617,14 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'launch':
         gid = sys.argv[2]; gid_check(gid)
         with (Path('/profiles') / gid / 'state.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            if Path('/vastgame-status/stopping').exists():
-                raise RuntimeError('Final backup in progress; launch blocked')
+            wait_for_state_lock(lock, timeout=300, mode=fcntl.LOCK_SH,
+                                stopping=Path('/vastgame-status/stopping'))
             from prepare_game import prepared_environment
             os.environ.update(prepared_environment(gid))
             prepare_shaders(gid)
             os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['backup', 'restore', 'idle', 'close'])
+    parser.add_argument('action', choices=['backup', 'restore', 'idle', 'close', 'resume'])
     parser.add_argument('game_id')
     parser.add_argument('--root', default='/srv/gaming')
     parser.add_argument('--remote', default='gdrive:VastGaming')
@@ -615,16 +633,18 @@ def main():
     parser.add_argument('--label', default='')
     parser.add_argument('--receipt')
     parser.add_argument('--cache-key')
+    parser.add_argument('--manifest-sha')
     parser.add_argument('--final', action='store_true')
     parser.add_argument('--live', action='store_true')
     a = parser.parse_args(); gid_check(a.game_id)
+    if (a.final or a.live) and a.action != 'backup':
+        raise ValueError('--final and --live apply only to backup')
+    if a.final and a.live:
+        raise ValueError('A live checkpoint cannot be a final backup')
     if a.action == 'close':
         close_windows(a.game_id); return
     if a.action == 'idle':
         container_idle(a.game_id); return
-    m = json.loads((Path(a.root) / 'profiles' / a.game_id / 'manifest.json').read_text())
-    if m['id'] != a.game_id:
-        raise ValueError('Game ID differs from manifest')
     if a.label and os.environ.get('VASTGAME_LAUNCH_LABEL', '') != a.label:
         saved = Path('/var/lib/vast-gaming/status/instance-label')
         if not saved.exists() or saved.read_text().strip() != a.label:
@@ -643,23 +663,41 @@ def main():
         else:
             wait_for_state_lock(lock)
         marker = Path('/var/lib/vast-gaming/status/stopping')
-        if a.action == 'backup' and not a.live:
-            marker.touch()
-            stop_cleanly(a.game_id)
-        elif a.action == 'restore':
-            idle(a.game_id)
-        context = cache_context(m) if not a.cache_key else None
-        key = a.cache_key or context_key(context)
-        if context:
-            (Path(a.root) / 'profiles' / a.game_id / 'cache-context.json').write_text(json.dumps(context))
-        remote = Remote(a.remote, a.config)
-        result = backup(m, a.root, remote, a.instance, key, context, live=a.live) if a.action == 'backup' else restore(m, a.root, remote, key, context, defer_shaders=True)
-        if not a.live:
-            idle(a.game_id)
-        if a.receipt and result:
-            Path(a.receipt).write_text(json.dumps(result))
-        if not a.final and not a.live:
+        raw = (Path(a.root) / 'profiles' / a.game_id / 'manifest.json').read_bytes()
+        if a.manifest_sha and hashlib.sha256(raw).hexdigest() != a.manifest_sha:
+            raise ValueError('VM save policy changed during state request; retry without replacing its manifest')
+        m = json.loads(raw)
+        if m['id'] != a.game_id:
+            raise ValueError('Game ID differs from manifest')
+        if a.action == 'resume':
             marker.unlink(missing_ok=True)
+            print('Game launching re-enabled. No backup or destruction performed.', flush=True)
+            return
+        if marker.exists() and not a.final:
+            if a.live:
+                print('Checkpoint deferred: final shutdown pending', flush=True)
+                return
+            raise RuntimeError('Final shutdown block retained. Retry vastgame stop, or explicitly run vastgame state resume '+a.game_id)
+        ordinary_backup = a.action == 'backup' and not a.live and not a.final
+        try:
+            if a.action == 'backup' and not a.live:
+                marker.touch()
+                stop_cleanly(a.game_id)
+            elif a.action == 'restore':
+                idle(a.game_id)
+            context = cache_context(m) if not a.cache_key else None
+            key = a.cache_key or context_key(context)
+            if context:
+                (Path(a.root) / 'profiles' / a.game_id / 'cache-context.json').write_text(json.dumps(context))
+            remote = Remote(a.remote, a.config)
+            result = backup(m, a.root, remote, a.instance, key, context, live=a.live) if a.action == 'backup' else restore(m, a.root, remote, key, context, defer_shaders=True)
+            if not a.live:
+                idle(a.game_id)
+            if a.receipt and result:
+                Path(a.receipt).write_text(json.dumps(result))
+        finally:
+            if ordinary_backup:
+                marker.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

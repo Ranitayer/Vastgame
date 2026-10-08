@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a pinned Core VM using API fields missing from the installed CLI."""
+"""Create a VM explicitly, including when the selected template defaults to Docker."""
 import json
 import os
 from pathlib import Path
@@ -16,13 +16,13 @@ class NoRedirect(HTTPRedirectHandler):
 
 def main():
     config_path, template_hash, offer, disk, label, startup_path = sys.argv[1:]
-    settings = json.loads(Path(config_path).read_text())
+    settings = json.loads(Path(config_path).read_text()) if config_path != '-' else {}
     image = settings.get('image', '')
-    if not re.fullmatch(r'ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}', image):
+    if config_path != '-' and not re.fullmatch(r'ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}', image):
         raise ValueError('Core image must be pinned to a valid GHCR digest')
-    if settings.get('template_hash') != template_hash:
+    if config_path != '-' and settings.get('template_hash') != template_hash:
         raise ValueError('Core image configuration belongs to a different template; reconfigure it before launch')
-    if settings.get('visibility') != 'public':
+    if config_path != '-' and settings.get('visibility') != 'public':
         raise ValueError('This Core image setup requires public registry access')
     if not offer.isdecimal() or int(offer) <= 0 or not disk.isdecimal() or int(disk) < 32:
         raise ValueError('Invalid offer or VM disk size')
@@ -40,8 +40,10 @@ def main():
     if not key:
         raise ValueError('Vast API key is missing')
     startup = Path(startup_path).read_text()
-    payload = dict(client_id='me', image=image, vm=True, template_hash_id=template_hash,
+    payload = dict(client_id='me', vm=True, template_hash_id=template_hash,
                    disk=int(disk), label=label, onstart=startup, cancel_unavail=True)
+    if image:
+        payload['image'] = image
     request = Request(f'https://console.vast.ai/api/v0/asks/{offer}/',
                       data=json.dumps(payload).encode(), method='PUT',
                       headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})

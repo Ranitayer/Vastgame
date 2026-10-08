@@ -66,8 +66,8 @@ class CoreTemplateTests(unittest.TestCase):
             env=dict(os.environ,VASTGAME_FORCE_ROUTE='1',VASTGAME_CLIENT_TSIP='100.76.83.60')
             subprocess.run(['python3',str(ROOT/'src/bootstrap/pack.py'),str(ROOT/'src/bootstrap/start.sh'),str(output)],env=env,check=True)
             self.assertLess(output.stat().st_size,15360)
-            payload=output.read_text().split("VASTGAME_BOOTSTRAP_B64' | xz -dc > \"$tmp\"\n",1)[1].split('\nVASTGAME_BOOTSTRAP_B64',1)[0]
-            raw=lzma.decompress(base64.b64decode(payload))
+            payload=output.read_text().split("VASTGAME_BOOTSTRAP_B85' | xz -dc > \"$tmp\"\n",1)[1].split('\nVASTGAME_BOOTSTRAP_B85',1)[0]
+            raw=lzma.decompress(base64.b85decode(payload))
             self.assertIn(b'export VASTGAME_FORCE_ROUTE=1',raw)
             self.assertIn(b'export VASTGAME_CLIENT_TSIP=100.76.83.60',raw)
             self.assertIn(b'prepare_core_vm() {',raw)
@@ -104,7 +104,12 @@ systemctl() { echo UNEXPECTED_SERVICE; }
 prepare_core_vm
 echo UNEXPECTED_READY
 '''
-        result=subprocess.run(['bash','-c',code],env=dict(os.environ,VASTGAME_TEST_CORE=str(ROOT/'src/bootstrap/core-vm.sh')),capture_output=True,text=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            helper=Path(tmp)/'core.sh'
+            helper.write_text((ROOT/'src/bootstrap/core-vm.sh').read_text().replace(
+                '/etc/apt/apt.conf.d/52vastgame-driver-stability', str(Path(tmp)/'driver-policy')))
+            code=code.replace('command() { return 1; }', 'mkdir() { :; }\ncommand() { return 1; }')
+            result=subprocess.run(['bash','-c',code],env=dict(os.environ,VASTGAME_TEST_CORE=str(helper)),capture_output=True,text=True)
         self.assertEqual(result.returncode,42,result.stdout+result.stderr)
         self.assertNotIn('UNEXPECTED_',result.stdout)
 
@@ -125,6 +130,7 @@ class CoreProvisioningTests(unittest.TestCase):
                 '/dev/uinput':'/dev/null' if devices else str(root/'absent-input'),
                 '/dev/uhid':'/dev/null' if devices else str(root/'absent-hid'),
                 '/root/.ssh/authorized_keys':str(root/'absent-key'),
+                '/etc/apt/apt.conf.d/52vastgame-driver-stability':str(root/'driver-policy'),
             }.items(): helper=helper.replace(original,replacement)
             stubs=r'''set -Eeuo pipefail
 command() {
@@ -176,6 +182,38 @@ mkdir() { :; }
         self.assertNotEqual(result.returncode,0)
         self.assertIn('Virtual input devices missing',result.stdout)
         self.assertNotIn('dependencies ready',result.stdout)
+
+
+class CoreGpuRuntimeTests(unittest.TestCase):
+    def check(self, gpu=0, refresh=0):
+        code='''set -Eeuo pipefail
+source "$VASTGAME_TEST_CORE"
+timeout() { shift; "$@"; }
+nvidia-smi() { echo 'driver fixture'; return "$GPU_RESULT"; }
+systemctl() { echo "SERVICE:$*"; return "$REFRESH_RESULT"; }
+prepare_core_gpu_runtime
+'''
+        return subprocess.run(['bash','-c',code],env=dict(os.environ,
+            VASTGAME_TEST_CORE=str(ROOT/'src/bootstrap/core-vm.sh'),
+            GPU_RESULT=str(gpu),REFRESH_RESULT=str(refresh)),capture_output=True,text=True)
+
+    def test_driver_error_reports_cause_before_cdi_refresh(self):
+        result=self.check(gpu=1)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('VM GPU driver is not ready: driver fixture',result.stdout)
+        self.assertNotIn('SERVICE:',result.stdout)
+
+    def test_healthy_driver_refreshes_device_definitions(self):
+        result=self.check()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('SERVICE:restart nvidia-cdi-refresh.service',result.stdout)
+
+    def test_driver_policy_keeps_other_updates_enabled(self):
+        source=(ROOT/'src/bootstrap/core-vm.sh').read_text()
+        policy=source.split("<<'DRIVER_POLICY'",1)[1].split('\nDRIVER_POLICY',1)[0]
+        self.assertIn('"^libnvidia-";',policy)
+        self.assertNotIn('".*"',policy)
+        self.assertNotIn('APT::Periodic',policy)
 
 
 class CoreModesetTests(unittest.TestCase):

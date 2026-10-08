@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -40,6 +41,22 @@ class StateTests(unittest.TestCase):
         self.shader = self.root / 'shaders/fixture/cache/pipeline.bin'; self.shader.parent.mkdir(parents=True); self.shader.write_bytes(b'compiled')
 
     def backup(self): return state.backup(self.m, self.root, self.remote, '123', 'a'*64)
+
+    def test_gpu_probe_failure_keeps_backup_but_disables_shader_reuse(self):
+        errors = (FileNotFoundError('nvidia-smi'), subprocess.CalledProcessError(1, 'nvidia-smi'), subprocess.TimeoutExpired('nvidia-smi', 20))
+        for error in errors:
+            with self.subTest(error=type(error).__name__), patch.object(state.subprocess, 'check_output', side_effect=error), patch.object(state, 'runner_builds', return_value={}):
+                context = state.cache_context(self.m)
+                self.assertIsNone(context['gpu_driver'])
+                key = state.context_key(context)
+                receipt = state.backup(self.m, self.root, self.remote, '123', key, context)
+                self.assertEqual(len(receipt['artifacts']), 3)
+                self.save.unlink(); self.config.unlink(); self.shader.unlink()
+                state.restore(self.m, self.root, self.remote, key, context)
+                self.assertEqual(self.save.read_bytes(), b'real save')
+                self.assertEqual(self.config.read_text(), 'DLSS=off')
+                self.assertFalse(self.shader.exists())
+                self.shader.write_bytes(b'compiled')
 
     def test_round_trip_preserves_saves_config_shaders(self):
         receipt = self.backup(); self.save.unlink(); self.config.unlink(); self.shader.unlink()

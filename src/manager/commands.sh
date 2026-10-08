@@ -52,11 +52,19 @@ VM lifecycle:
   vastgame status                   Show current Vast instances
   vastgame logs                     Show the selected VM bootstrap log
   vastgame logs game                Show game launch status and Lutris/Proton log tail
+  vastgame logs report              Show the latest redacted failure report and its folder
   vastgame stop                     Save verified state, then destroy VM
   vastgame setup                    Save or change the Vast template hash
+  vastgame streamedit               Edit stream resolution, FPS, bitrate and Moonlight options
+  vastgame cleanup                  Preview expired, inactive local artifacts
+  vastgame cleanup --apply          Remove previewed artifacts; preserve saves and releases
+  vastgame update                   Install the latest Windows release; keep accounts/settings
 
 Game catalog:
   vastgame game add <folder> [id]   Detect an executable and create a manifest
+  vastgame ingest <URL> [id]        Import and publish a direct portable-game ZIP
+    --exe <path> --dlss --sha256 <hash> --keep-staging
+                                   Resolve EXE ambiguity, enable NGX, verify source, retain staging
   vastgame add ... --dlss           Enable NVIDIA compatibility; choose effects in-game
   vastgame game list                List registered games
   vastgame game inspect <id>        Print a game's manifest
@@ -73,6 +81,7 @@ Game catalog:
 Persistent state:
   vastgame state backup <id>        Save and verify game saves, configs and shaders
   vastgame state restore <id>       Restore verified state while the game is closed
+  vastgame state resume <id>        Release a retained shutdown block; no backup or destroy
 
 Short game aliases:
   vastgame add <folder> [id]        Same as `vastgame game add`
@@ -109,28 +118,44 @@ if (( $# > 0 )); then shift; fi
 case "$command" in
     game)
         case "${1:-}" in
-            add|list|inspect|validate|select|package|remove|dlss) command="$1"; shift ;;
+            add|ingest|list|inspect|validate|select|package|remove|dlss) command="$1"; shift ;;
             *) usage; exit 2 ;;
         esac
         ;;
     state)
-        case "${1:-}" in backup|restore) command="$1"; shift ;; *) usage; exit 2 ;; esac
+        case "${1:-}" in backup|restore|resume) command="$1"; shift ;; *) usage; exit 2 ;; esac
         ;;
 esac
-# One local writer owns lifecycle/catalog changes; readers remain available.
+# Lifecycle operations serialize independently from catalog publication.
 case "$command" in
-    start|connect|stop|add|select|package|remove|dlss|saves|backup|restore|setup)
+    start|connect|stop|add|select|package|remove|dlss|saves|backup|restore|resume|setup)
         exec 8>"$STATEDIR/lifecycle.lock"
         flock -n 8 || die "Another Vastgame operation is active. Wait for it to finish."
         ;;
 esac
+# Imports may overlap VM startup, but never another catalog writer/removal.
 case "$command" in
+    add|ingest|package|remove|dlss|saves)
+        exec 7>"$STATEDIR/catalog.lock"
+        flock -n 7 || die "Another Vastgame catalog operation is active. Wait for it to finish."
+        ;;
+esac
+case "$command" in
+    update)
+        [[ "${VASTGAME_WINDOWS:-0}" == 1 ]] || die "Windows updater only. On Linux, update your Vastgame source checkout."
+        vastgame-native update
+        ;;
+    cleanup)
+        python3 "$CLIENT_DIR/cleanup.py" --app "$APP_ROOT" --state "$STATEDIR" \
+            --data "${XDG_DATA_HOME:-$HOME/.local/share}/vastgame" "$@"
+        ;;
     saves) game_discover_saves "$@" ;;
     crashes)
         printf 'Local native client reports: %s/crashes\n' "$STATEDIR"
         [[ ! -d "$STATEDIR/crashes" ]] || find "$STATEDIR/crashes" -type f -name '*.dmp' -print
         ;;
     add) game_add "$@" ;;
+    ingest) game_ingest "$@" ;;
     list) game_list ;;
     inspect) game_inspect "${1:-}" ;;
     validate) game_validate "${1:-}" ;;
@@ -140,13 +165,23 @@ case "$command" in
     dlss) game_enable_dlss "${1:-}" ;;
     backup) state_backup "${1:-}" ;;
     restore) state_restore "${1:-}" ;;
+    resume) state_resume "${1:-}" ;;
     setup) setup_template ;;
+    streamedit) edit_stream_settings ;;
     stop) stop_game ;;
     status) vastai show instances ;;
-    connect) connect_game ;;
-    logs) if [[ "${1:-}" == game ]]; then show_game_log; else show_logs; fi ;;
+    connect) read_stream_settings >/dev/null || die "Fix stream.json before connecting"; connect_game ;;
+    logs)
+        if [[ "${1:-}" == game ]]; then show_game_log
+        elif [[ "${1:-}" == report ]]; then
+            report="$(cat "$STATEDIR/latest-report" 2>/dev/null || true)"
+            [[ "$report" == "$STATEDIR/reports/"* && -f "$report/summary.txt" ]] || die "No failure report saved yet."
+            cat "$report/summary.txt"
+            printf '\nReport: %s\n' "$report"
+        else show_logs; fi ;;
     help|-h|--help) usage ;;
     start|"")
+        read_stream_settings >/dev/null || die "Fix stream.json before starting a VM; no rental submitted"
         active="$(all_vastgame_instances)" || die "Cannot check existing VMs; no new VM rented"
         jq -e 'length == 0' >/dev/null <<<"$active" || die "A Vastgame VM already exists. Use connect or stop before starting another."
         [[ -z "${1:-}" ]] || game_select "$1" >/dev/null

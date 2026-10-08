@@ -4,3 +4,7 @@ __pycache__/
 /build/
 /dist/
 *.log
+
+# Private account exports never belong in source or public releases.
+Vastgame-Accounts.tar
+accounts.tar

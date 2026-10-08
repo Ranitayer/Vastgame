@@ -4,14 +4,14 @@
 
 wait_for_gaming() {
     local id="$1"
+    local VG_FAILURE_INSTANCE="$id"
     local start
     local now
     local e
     local ip
-    local info payload event
-    local last_diagnostic=0
+    local info payload
 
-    tailscale status >/dev/null 2>&1 ||
+    timeout 10s tailscale status >/dev/null 2>&1 ||
         die "Tailscale is not running/logged in on this PC."
 
     echo
@@ -38,15 +38,7 @@ wait_for_gaming() {
         e=$(( $(date +%s) - start ))
         print_tailscale_progress "$e"
 
-        # Report the latest bootstrap failure even before its Tailscale HTTP service exists.
-        if (( e >= 30 && e - last_diagnostic >= 30 )); then
-            last_diagnostic="$e"
-            progress_run tailscale_wait_frame timeout 15s vastai logs "$id" --tail 80 || true
-            event="$(grep -E '\[VASTGAME\]|^Bootstrap requires xz$' <<<"$VG_POLL_OUTPUT" | tail -n 1 || true)"
-            if [[ "$event" == *'[VASTGAME] ERROR:'* || "$event" == 'Bootstrap requires xz' ]]; then
-                destroy_failed_prompt "$id" "Bootstrap failed before Tailscale connected: $event"
-            fi
-        fi
+        check_startup_logs "$id" "$info" tailscale_wait_frame
 
         (( e < TAILSCALE_TIMEOUT )) ||
             destroy_failed_prompt \
@@ -63,6 +55,7 @@ wait_for_gaming() {
         echo
         warn "Host failed local Moonlight route requirements."
         warn "Instance $id was retained to protect any existing saves; it may still be billing."
+        collect_failure_report "$id" "Moonlight route qualification failed"
         die "Route check failed. Retry with vastgame connect, or save and stop with vastgame stop."
 
     fi
@@ -102,7 +95,10 @@ wait_for_gaming() {
             progress_clear
             ok "Restore complete; Wolf streaming server is responding"
             record_restore_history "$id" "$VG_RESTORE_METRICS" || true
-            launch_moonlight "$ip" || return 1
+            if ! launch_moonlight "$ip"; then
+                collect_failure_report "$id" "Moonlight or game startup failed"
+                return 1
+            fi
             return 0
         fi
         if (( e >= WOLF_TIMEOUT )); then

@@ -2,7 +2,7 @@
 # FINAL BACKUP
 # ============================================================
 
-# Deploy helpers to the selected VM, validate its launch identity, then run state I/O.
+# Verify the selected VM before deploying isolated state helpers or accessing saves.
 verified_state_endpoint() {
     local info="$1" label="$2" host port remote_label seen=""
     while IFS=$'\t' read -r host port; do
@@ -27,7 +27,9 @@ verified_state_endpoint() {
 }
 
 remote_state() (
-    local action="$1" id="$2" wanted="${3:-}" final="${4:-}" info host port label gid temp receipt
+    local action="$1" id="$2" wanted="${3:-}" final="${4:-}" info host port label gid temp receipt helper_sha manifest_sha
+    case "$action" in backup|restore|resume) ;; *) return 1 ;; esac
+    [[ -z "$final" || "$final" == --final ]] || return 1
     local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
     info="$(instance_json "$id")" || return 1
     jq -e --arg id "$id" '(.id|tostring) == $id' >/dev/null <<<"$info" || return 1
@@ -51,14 +53,37 @@ remote_state() (
     gid="$(jq -r '.game_id // empty' "$temp/session.json")"
     valid_game_id "$gid" || { warn "VM game identity is unavailable"; return 1; }
     [[ -z "$wanted" || "$gid" == "$wanted" ]] || { warn "Selected VM is running $gid, not $wanted"; return 1; }
-    [[ -f "$(game_manifest "$gid")" ]] || { warn "Local manifest missing for $gid"; return 1; }
-    # The runtime archive is content-pinned during boot; deploy the same local helper
-    # set here so old VMs can use the final-backup path without rebooting.
-    tar -C "$RUNTIME_DIR" -cf "$temp/runtime.tar" . || return 1
-    "${remote_ssh[@]}" 'mkdir -p /opt/vastgame; tar -C /opt/vastgame -xf -' < "$temp/runtime.tar" || return 1
-    "${remote_ssh[@]}" "cat > /srv/gaming/profiles/$gid/manifest.json" < "$(game_manifest "$gid")" || return 1
+    # The guest's launch manifest is authoritative, even on a client with stale metadata.
+    "${remote_ssh[@]}" "cat /srv/gaming/profiles/$gid/manifest.json" > "$temp/manifest.json" || return 1
+    jq -e --arg gid "$gid" '.schema == 1 and .id == $gid' "$temp/manifest.json" >/dev/null || return 1
+    manifest_sha="$(sha256sum "$temp/manifest.json" | cut -d ' ' -f 1)"
+    # This self-contained helper is independent of the live /opt/vastgame runtime.
+    cp "$RUNTIME_DIR/game_state.py" "$temp/game_state.py" || return 1
+    helper_sha="$(sha256sum "$temp/game_state.py" | cut -d ' ' -f 1)"
+    local deploy
+    deploy="$(cat <<'STATE_HELPER'
+set -Eeuo pipefail
+sha="$1"
+label="$2"
+[[ "$(cat /var/lib/vast-gaming/status/instance-label)" == "$label" ]]
+install -d -m 700 /opt/vastgame-state
+stage=$(mktemp -d /opt/vastgame-state/.stage.XXXXXX)
+trap 'rm -rf -- "$stage"' EXIT
+cat > "$stage/game_state.py"
+printf '%s  %s\n' "$sha" "$stage/game_state.py" | sha256sum -c - >/dev/null
+python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$stage/game_state.py"
+chmod 600 "$stage/game_state.py"
+if [[ -d /opt/vastgame-state/$sha ]]; then
+  cmp "$stage/game_state.py" /opt/vastgame-state/$sha/game_state.py
+else
+  mv -T "$stage" /opt/vastgame-state/$sha
+fi
+STATE_HELPER
+)"
+    deploy="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.stdin.read()))' <<<"$deploy")" || return 1
+    "${remote_ssh[@]}" "bash -c $deploy -- $helper_sha $label" < "$temp/game_state.py" || return 1
     receipt="/srv/gaming/profiles/$gid/backup-receipt.json"
-    "${remote_ssh[@]}" "python3 /opt/vastgame/game_state.py $action $gid --instance $id --label $label --config /etc/rclone/rclone.conf --receipt $receipt $final" || return 1
+    "${remote_ssh[@]}" "python3 /opt/vastgame-state/$helper_sha/game_state.py $action $gid --instance $id --label $label --manifest-sha $manifest_sha --config /etc/rclone/rclone.conf --receipt $receipt $final" || return 1
     if [[ "$action" == backup ]]; then
         "${remote_ssh[@]}" "cat $receipt" > "$temp/receipt.json" || return 1
         jq -e --arg instance "$id" --arg game "$gid"             '.schema == 1 and .instance_id == $instance and .game_id == $game and (.snapshot | length > 0)'             "$temp/receipt.json" >/dev/null || return 1
@@ -102,4 +127,3 @@ stop_game() {
 
     ok "Instance destroyed — GPU billing stopped"
 }
-

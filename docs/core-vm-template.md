@@ -174,35 +174,27 @@ Vast GPU/encoding/gameplay test. The original build receipt is attached to the
 It does not upload it or change the selected launch image. Keep temporary build
 space on disk, and verify a replacement before removing the previous version.
 
-### Select the prebuilt image
+### Custom image launch status
 
-**Currently disabled locally:** the 2026-10-08 live trial launched the outer SSH
-container instead of the prepared guest and failed with `Bootstrap requires xz`.
-The published image is retained, but its Vast VM launch integration is not
-validated. Configuration is saved as `core-image.experimental.json`; new launches
-use the official Core VM template. Do not enable the override for normal gaming
-until the supervisor launch, guest boot and bootstrap transport are verified.
+The published image remains experimental. The 2026-10-08 Vast trial started the
+outer SSH container instead of the guest. The existing `vm: true` API request did
+not establish a working VM launch. Vast's public VM guide specifies SSH-only
+launches; the generic `args` container mode is not a verified substitute for the
+provider's VM supervisor, GPU passthrough and guest startup transport.
 
-After making the compiled GHCR package public, save
-`~/.config/vastgame/core-image.json` with mode `600`:
+At the user's request, `~/.config/vastgame/core-image.json` now enables the pinned
+custom image for future rentals. The launcher warns that guest launch remains
+unverified. The receipt also remains in `core-image.experimental.json`.
+Existing VMs retain the image and bootstrap they were created with.
+The image has not been deleted, and its guest disk/runtime remain available.
+Fixing custom image support requires confirmation of the provider-supported
+custom VM launch contract and a successful fresh-VM acceptance run. Do not treat
+local guest boot or registry upload as proof of Vast compatibility.
 
-```json
-{
-  "image": "ghcr.io/ranitayer/vastgame-core@sha256:f7b5cbd83825d9e60f7b16b36555e76c4d327614141e629779284944db9d6fb7",
-  "template_hash": "a4a9d7dbdd5453175cda4a4c4db1ab60",
-  "visibility": "public"
-}
-```
-
-Use your account's Core template hash if it differs. The launcher refuses an
-override belonging to another selected template. It uses Vast's create API with
-the pinned image and explicit `vm: true`, retaining the template's authentication
-and SSH settings, selected disk size, packed bootstrap and unique launch label.
-The installed Vast CLI does not expose that VM flag for custom images. Rental
-requests are never retried automatically; existing timeout recovery identifies
-the exact launch label. No GitHub pull credentials are sent to Vast.
-
-Run `vastgame force start still` to perform the fresh VM acceptance test. An
-existing instance reconnects instead; finish its verified stop first. To restore
-the official base image, rename or remove only `core-image.json`. Keep the
-account template and persistence configuration intact.
+New launches use the selected custom image with the Core VM template. Startup logs are checked during
+both provider boot and Tailscale discovery. A missing-domain message alone is
+allowed initially; if Vast remains `created` and repeated logs still end there
+for five minutes, the watcher reports that guest boot is unconfirmed. Explicit
+bootstrap errors fail immediately at the next log probe. Status, log and local
+Tailscale calls have bounded deadlines. Failures do not destroy possible saves
+or submit another rental automatically.

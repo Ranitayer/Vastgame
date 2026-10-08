@@ -70,6 +70,16 @@ sys.stdout.buffer.write((Path(os.environ['PARTS_SOURCE']) / name).read_bytes())
         self.assertGreater(record['restore_mbps'], 0)
         self.assertEqual(record['state'], 'done')
 
+    def test_content_addressed_objects_restore_through_existing_pipeline(self):
+        package = self.manifest['package']
+        package['archive'] = 'games/fixture/' + self.sha + '/game.tar.zst'
+        for part in package['parts']:
+            part['object'] = 'games/fixture/objects/' + part['sha256'] + '.part'
+            (self.source / (part['sha256'] + '.part')).write_bytes((self.source / part['name']).read_bytes())
+        restore.restore(self.manifest, self.sha, self.games,
+                        'remote/games/fixture/' + self.sha + '/parts', workers=3)
+        self.assertEqual((self.games/'fixture/data.bin').read_bytes(), self.original)
+
     def existing(self):
         target = self.games/'fixture'; target.mkdir(parents=True)
         (target/'old-save-proof').write_text('preserve')

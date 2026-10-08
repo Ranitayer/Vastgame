@@ -21,8 +21,9 @@ State has separate lifetimes:
 - Build workspaces, temporary state transfer directories and old session logs
   are disposable once their processes have exited.
 
-Local mutating operations share `lifecycle.lock`; background client processes
-close that descriptor before detaching. VM state operations have a separate
+Lifecycle operations use `lifecycle.lock`; catalog writers use `catalog.lock`.
+Ingestion can overlap a gaming session. Background client processes close the
+lifecycle descriptor before detaching. VM state operations have a separate
 per-game lock. Live checkpoints never stop a game. Final shutdown stops it,
 verifies persistent state and polls the provider for destruction completion.
 

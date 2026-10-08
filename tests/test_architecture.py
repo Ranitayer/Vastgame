@@ -86,8 +86,8 @@ class ArchitectureTests(unittest.TestCase):
             self.assertEqual(output.stat().st_mode & 0o777,0o600)
             self.assertNotIn('fixture with', (ROOT/'src/bootstrap/start.sh').read_text())
             import base64,lzma
-            payload=output.read_text().split("VASTGAME_BOOTSTRAP_B64' | xz -dc > \"$tmp\"\n",1)[1].split('\nVASTGAME_BOOTSTRAP_B64',1)[0]
-            raw=lzma.decompress(base64.b64decode(payload))
+            payload=output.read_text().split("VASTGAME_BOOTSTRAP_B85' | xz -dc > \"$tmp\"\n",1)[1].split('\nVASTGAME_BOOTSTRAP_B85',1)[0]
+            raw=lzma.decompress(base64.b85decode(payload))
             subprocess.run(['bash','-n'],input=raw,check=True)
             config.write_text('{"UNEXPECTED":"value"}')
             output.unlink()

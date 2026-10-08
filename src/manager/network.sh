@@ -20,7 +20,7 @@ get_vast_ip() {
         verify_peer_identity "$ip" "$id" || continue
         printf '%s\n' "$ip"
         return 0
-    done < <(tailscale status --json 2>/dev/null | jq -r '
+    done < <(timeout 10s tailscale status --json 2>/dev/null | jq -r '
         .Peer[]? | select(.Online == true) |
         select((.HostName // "" | startswith("vast-gaming")) or
                (.DNSName // "" | startswith("vast-gaming"))) |

@@ -1,0 +1,19 @@
+{
+  "resolution": "native",
+  "fps": "native",
+  "bitrate_mbps": null,
+  "video_codec": "AV1",
+  "video_decoder": "auto",
+  "display_mode": "fullscreen",
+  "moonlight_options": {
+    "vsync": true,
+    "frame-pacing": true,
+    "hdr": false,
+    "yuv444": false,
+    "audio-config": "stereo",
+    "absolute-mouse": false,
+    "multi-controller": true,
+    "capture-system-keys": "never",
+    "performance-overlay": true
+  }
+}

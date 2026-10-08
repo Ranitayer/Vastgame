@@ -31,9 +31,8 @@ raw = (prefix + "\n".join(line for line in src.read_text().replace("__VASTGAME_R
 
 compressed = lzma.compress(raw, preset=9)
 
-payload = base64.b64encode(compressed).decode("ascii")
-
-lines = payload
+# Base85 uses less transport space than Base64 without changing the compressed bytes.
+payload = base64.b85encode(compressed).decode("ascii")
 
 wrapper = f"""#!/bin/sh
 set -eu
@@ -45,10 +44,15 @@ export VASTGAME_GAME_MANIFEST_SHA={shlex.quote(os.environ.get('GAME_MANIFEST_SHA
 export VASTGAME_GAME_ID={shlex.quote(sys.argv[5] if len(sys.argv) > 5 else "")}
 tmp=/tmp/vastgame-bootstrap.sh
 
+if [ ! -d /run/systemd/system ]; then
+    echo '[VASTGAME] ERROR: Bootstrap did not enter the systemd VM guest. Check Vast VM launch integration; Tailscale setup was not started.'
+    exit 1
+fi
 command -v xz >/dev/null || {{ echo 'Bootstrap requires xz'; exit 1; }}
-base64 -d <<'VASTGAME_BOOTSTRAP_B64' | xz -dc > "$tmp"
-{lines}
-VASTGAME_BOOTSTRAP_B64
+command -v python3 >/dev/null || {{ echo 'Bootstrap requires Python 3'; exit 1; }}
+python3 -c 'import base64,sys;sys.stdout.buffer.write(base64.b85decode(sys.stdin.buffer.read().strip()))' <<'VASTGAME_BOOTSTRAP_B85' | xz -dc > "$tmp"
+{payload}
+VASTGAME_BOOTSTRAP_B85
 
 chmod 700 "$tmp"
 exec /bin/bash "$tmp"

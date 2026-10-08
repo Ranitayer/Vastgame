@@ -51,6 +51,19 @@ base_create_json = '{"HostConfig":{"IpcMode":"host"}}'
 
 
 class SessionTests(unittest.TestCase):
+    def test_game_telemetry_keeps_caps_and_uses_hidden_managed_collection(self):
+        from types import SimpleNamespace
+        m=manifest(); m['environment']['MANGOHUD_CONFIG']='fps_limit=90,no_display=0,log_interval=0'
+        collector=SimpleNamespace(folder=Path('/home/retro/.local/state/vastgame/performance/fixture/run'), control='vastgame-run-')
+        env=session.config(m,collector)['system']['env']
+        self.assertEqual(env['MANGOHUD'],'1')
+        self.assertIn('fps_limit=90',env['MANGOHUD_CONFIG'])
+        self.assertIn('no_display=1',env['MANGOHUD_CONFIG'])
+        self.assertNotIn('no_display=0',env['MANGOHUD_CONFIG'])
+        self.assertIn('log_interval=500',env['MANGOHUD_CONFIG'])
+        self.assertIn('control=vastgame-run-%p',env['MANGOHUD_CONFIG'])
+        self.assertIn('permit_upload=0',env['MANGOHUD_CONFIG'])
+
     def test_native_launch_disables_inherited_upscaler(self):
         m = manifest()
         self.assertEqual(session.config(m)['system']['env']['WINE_FULLSCREEN_FSR'], '0')
@@ -287,11 +300,11 @@ class SessionTests(unittest.TestCase):
         function = cli[cli.index('game_add() {'):cli.index('\ngame_package()')]
         import os
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp)/'Portal'; source.mkdir(); (source/'Portal.exe').touch()
+            source = Path(tmp)/'Portal'; source.mkdir(); (source/'Portal.exe').write_bytes(b'MZ'+bytes(58)+(64).to_bytes(4, 'little')+b'PE\0\0')
             root = Path(tmp)/'catalog'
             code = 'valid_game_id() { return 0; }; game_manifest() { printf "%s/%s/manifest.json" "$GAME_ROOT" "$1"; }; ok() { :; }; warn() { :; }; die() { exit 1; }; ' + function + '\ngame_add "$VASTGAME_TEST_SOURCE" fixture --dlss'
             subprocess.run(['bash', '-e', '-c', code], check=True, stdout=subprocess.DEVNULL,
-                           env=dict(os.environ, GAME_ROOT=str(root), VASTGAME_TEST_SOURCE=str(source)))
+                           env=dict(os.environ, GAME_ROOT=str(root), CLIENT_DIR=str(ROOT/'src/client'), VASTGAME_TEST_SOURCE=str(source)))
             m = json.loads((root/'fixture/manifest.json').read_text())
             self.assertEqual(m['game']['arguments'], [])
             self.assertEqual(m['game']['executable'], 'Portal.exe')
@@ -309,6 +322,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(d['uuid'], 'keep-identity')
         self.assertEqual(d['paired_clients'][0]['client_cert'], 'keep-client')
         app = next(a for a in d['profiles'][0]['apps'] if a['title'] == title)
+        self.assertEqual(app['runner']['image'],'vastgame-preparation:v1')
         mounts = app['runner']['mounts']
         self.assertIn('/srv/gaming/prefixes:/prefixes:rw', mounts)
         self.assertIn('/srv/gaming/lutris/fixture:/var/lutris/:rw', mounts)
@@ -344,10 +358,13 @@ class SessionTests(unittest.TestCase):
             output = root/'onstart.sh'
             subprocess.run([sys.executable, str(script), str(ROOT/'src/bootstrap/start.sh'), str(output), 'vastgame-1234567890', '123456', 'fixture'], check=True)
             self.assertLess(output.stat().st_size, 15360)
+            wrapper = output.read_text()
+            self.assertIn('if [ ! -d /run/systemd/system ]; then', wrapper)
+            self.assertLess(wrapper.index('Bootstrap did not enter'), wrapper.index('python3 -c'))
             subprocess.run(['sh', '-n', str(output)], check=True)
             import base64, lzma
-            payload = output.read_text().split("VASTGAME_BOOTSTRAP_B64' | xz -dc > \"$tmp\"\n", 1)[1].split('\nVASTGAME_BOOTSTRAP_B64', 1)[0]
-            decoded = lzma.decompress(base64.b64decode(payload))
+            payload = output.read_text().split("VASTGAME_BOOTSTRAP_B85' | xz -dc > \"$tmp\"\n", 1)[1].split('\nVASTGAME_BOOTSTRAP_B85', 1)[0]
+            decoded = lzma.decompress(base64.b85decode(payload))
             subprocess.run(['bash', '-n'], input=decoded, check=True)
 
 

@@ -13,6 +13,15 @@ fail() {
   exit 1
 }
 
+bootstrap_failure() {
+  local code="$1" line="$2" command="$3" source="$4"
+  # Log the command name and source location, never expanded credentials/arguments.
+  command="${command%% *}"
+  [[ "$command" =~ ^[a-zA-Z0-9_./:-]+$ ]] || command='shell expression'
+  echo "[VASTGAME] FAILURE: source=$source line=$line exit=$code command=$command"
+  fail "Bootstrap command failed at $source:$line (exit $code); see preceding output"
+}
+
 BOOT_RCLONE_CONFIG_B64="${RCLONE_CONFIG_B64:-}"
 BOOT_TS_AUTHKEY="${TS_AUTHKEY:-}"
 
@@ -42,7 +51,7 @@ if [ -r /etc/environment ]; then
 fi
 if [ "${VASTGAME_TEMPLATE_PROFILE:-}" = core-v1 ]; then
   declare -F prepare_core_vm >/dev/null || fail 'Core VM setup missing from startup transport'
-  trap 'fail "Core VM dependency preparation failed at line $LINENO (exit $?)"' ERR
+  trap 'bootstrap_failure "$?" "$LINENO" "$BASH_COMMAND" "${BASH_SOURCE[0]}"' ERR
   prepare_core_vm
 fi
 
@@ -164,7 +173,7 @@ rm -f /var/lib/vast-gaming/status/{phase,error,core,state,identity,game,images,s
 for task in core state identity game images setup proton dx12 prefix; do
   progress_set "$task" pending "Waiting"
 done
-trap 'fail "Unexpected bootstrap failure at line $LINENO (exit $?)"' ERR
+trap 'bootstrap_failure "$?" "$LINENO" "$BASH_COMMAND" "${BASH_SOURCE[0]}"' ERR
 
 
 mkdir -p /opt/vastgame
@@ -650,7 +659,7 @@ RETRO_GID="$(
   if ! timeout --foreground 300 docker build --network=host -t vastgame-preparation:v1 - > "$preparation_log" 2>&1 <<'PREPARATION_IMAGE'
 FROM ghcr.io/games-on-whales/lutris:edge
 USER root
-RUN (apt-get -o Acquire::Retries=3 update || (. /etc/os-release; curl -fsS --connect-timeout 10 --max-time 30 "https://old-releases.ubuntu.com/ubuntu/dists/$VERSION_CODENAME/Release" -o /dev/null && sed -i -E 's#https?://(archive|security).ubuntu.com/ubuntu/?#https://old-releases.ubuntu.com/ubuntu/#g' /etc/apt/sources.list.d/ubuntu.sources && apt-get -o Acquire::Retries=3 update)) && apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends xvfb xauth && rm -rf /var/lib/apt/lists/*
+RUN (apt-get -o Acquire::Retries=3 update || (. /etc/os-release; curl -fsS --connect-timeout 10 --max-time 30 "https://old-releases.ubuntu.com/ubuntu/dists/$VERSION_CODENAME/Release" -o /dev/null && sed -i -E 's#https?://(archive|security).ubuntu.com/ubuntu/?#https://old-releases.ubuntu.com/ubuntu/#g' /etc/apt/sources.list.d/ubuntu.sources && apt-get -o Acquire::Retries=3 update)) && apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends xvfb xauth mangohud && (if apt-cache show mangohud:i386 2>/dev/null | grep -q '^Package:'; then apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends mangohud:i386; fi) && rm -rf /var/lib/apt/lists/*
 PREPARATION_IMAGE
   then
     tail -n 60 "$preparation_log" || true
@@ -733,6 +742,7 @@ wait "$GAME_PID" && GAME_OK=1 || true
 progress_phase DOCKER
 progress_set setup running "Validating GPU and configuring Lutris"
 
+if declare -F prepare_core_gpu_runtime >/dev/null; then prepare_core_gpu_runtime || fail "GPU driver/CDI validation failed"; fi
 docker run \
   --rm \
   --runtime=nvidia \
@@ -756,8 +766,8 @@ if [ -n "$GAME_ID" ]; then
   mkdir -p "/srv/gaming/lutris/$GAME_ID" "/srv/gaming/profiles/$GAME_ID/logs" "/srv/gaming/prefixes/$GAME_ID"
   wolf_error="$(python3 /opt/vastgame/configure_wolf.py "$CFG" "/srv/gaming/profiles/$GAME_ID/manifest.json" /var/lib/vast-gaming/status 2>&1)" || fail "Direct Wolf app configuration failed: $wolf_error"
   # Check the cached image supports the startup hook before renting time on a broken session.
-  docker run --rm -v /opt/vastgame:/opt/vastgame:ro -e PYTHONPATH=/opt/vastgame --entrypoint /bin/bash ghcr.io/games-on-whales/lutris:edge -c \
-    'grep -q startup.d /opt/gow/startup-app.sh && grep -q LUTRIS_ARGS /opt/gow/startup-app.sh && command -v lutris && /usr/bin/python3 -c "from game_session import lutris_api; lutris_api()"' || fail "Lutris image missing startup hook/API"
+  docker run --rm -v /opt/vastgame:/opt/vastgame:ro -e PYTHONPATH=/opt/vastgame --entrypoint /bin/bash vastgame-preparation:v1 -c \
+    'command -v mangohud && grep -q startup.d /opt/gow/startup-app.sh && grep -q LUTRIS_ARGS /opt/gow/startup-app.sh && command -v lutris && /usr/bin/python3 -c "from game_session import lutris_api; lutris_api()"' || fail "Lutris image missing startup hook/API"
 fi
 
 # Game publication and setup must both finish before state or Wolf can launch.

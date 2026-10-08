@@ -32,6 +32,8 @@ def configure(text, m):
         raise ValueError('Expected exactly one Moonlight profile')
     runner = copy.deepcopy(sources[0]['runner'])
     runner['name'] = 'WolfLutris_vastgame_' + gid
+    # Preparation and gameplay must use the same installed MangoHud layer.
+    runner['image'] = 'vastgame-preparation:v1'
     mounts = {
         '/var/lutris/': f'/srv/gaming/lutris/{gid}:/var/lutris/:rw',
         # Wolf always injects /home/retro itself. Share its top-level runtime

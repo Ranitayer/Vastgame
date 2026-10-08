@@ -36,6 +36,17 @@ case "${0##*/}" in
       -Address "$address" -Count "$count" -Interval "$interval" -TimeoutSeconds "$wait" | sed 's/\r$//'
     ;;
   vastgame-native)
+    if [[ "${1:-}" == update ]]; then
+      root="$(jq -er '.application' "$cfg")"
+      native_powershell -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$root/Check-Updates.ps1")"
+      exit $?
+    fi
+    if [[ "${1:-}" == edit-stream ]]; then
+      executable="$(jq -er '.powershell' "$cfg")"
+      executable="$(dirname "$(dirname "$(dirname "$executable")")")/notepad.exe"
+      "$executable" "$(wslpath -w "$2")"
+      exit $?
+    fi
     root="$(jq -er '.application' "$cfg")"
     result="$(native_powershell -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$root/Native-Screen.ps1")" | tr -d '\r')"
     case "${1:-}" in

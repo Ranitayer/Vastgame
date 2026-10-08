@@ -44,6 +44,17 @@ class PreparationTests(unittest.TestCase):
             prep.prepare(manifest(),self.runner)
         return progress
 
+    def test_gameplay_uses_prepared_image_with_mangohud_installed(self):
+        boot=(ROOT/'src/bootstrap/start.sh').read_text()
+        self.assertIn('xvfb xauth mangohud',boot)
+        self.assertIn('apt-cache show mangohud:i386',boot)
+        self.assertIn('command -v mangohud',boot)
+        configured,_=wolf.configure(CONFIG,manifest())
+        import tomllib
+        profile=tomllib.loads(configured)['profiles'][0]
+        app=next(item for item in profile['apps'] if item['title']=='Vastgame - fixture')
+        self.assertEqual(app['runner']['image'],'vastgame-preparation:v1')
+
     def test_setup_uses_selected_runner_and_never_game_executable(self):
         progress = self.run_prepare()
         self.assertEqual(len(self.calls),2)
@@ -190,12 +201,8 @@ class PreparationTests(unittest.TestCase):
         cli=cli_source()
         helper=cli[cli.index('native_screen_resolution() {'):cli.index('\nlaunch_moonlight()')]
         screen={'outputs':[dict(connected=True,enabled=True,priority=1,rotation=1,scale=2,preferredModes=['60'],currentModeId='90',modes=[dict(id='60',size=dict(width=2944,height=1840),refreshRate=59.999),dict(id='90',size=dict(width=2944,height=1840),refreshRate=89.999)])]}
-        r=subprocess.run(['bash','-c','kscreen-doctor() { printf "%s" "$SCREEN"; }; '+helper+'\nmoonlight_game_options'],env=dict(os.environ,SCREEN=json.dumps(screen)),capture_output=True,text=True,check=True)
-        opts=r.stdout.splitlines()
-        self.assertEqual(opts[opts.index('--resolution')+1],'2944x1840')
-        self.assertEqual(opts[opts.index('--fps')+1],'90')
-        self.assertIn('--no-absolute-mouse',opts); self.assertIn('--multi-controller',opts)
-        self.assertEqual(opts[opts.index('--capture-system-keys')+1],'never')
+        r=subprocess.run(['bash','-c','kscreen-doctor() { printf "%s" "$SCREEN"; }; '+helper+'\nnative_screen_resolution; native_screen_refresh'],env=dict(os.environ,SCREEN=json.dumps(screen)),capture_output=True,text=True,check=True)
+        self.assertEqual(r.stdout.splitlines(),['2944x1840','90'])
 
 
 if __name__=='__main__': unittest.main()

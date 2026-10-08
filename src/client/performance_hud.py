@@ -50,6 +50,20 @@ def parse_moonlight(text):
     return data
 
 
+def merge_vm_metrics(metrics, vm, meta, now=None):
+    updated = vm.get('updated')
+    now = time.time() if now is None else now
+    if (not meta.get('session_id') or vm.get('game_id') != meta.get('game_id')
+            or vm.get('session_id') != meta['session_id'] or type(updated) not in (int, float)
+            or not math.isfinite(updated) or not 0 <= now-updated < 6):
+        return False
+    metrics.update({key: value for key, value in vm.items() if key not in ('schema', 'updated', 'source')
+                    and type(value) in (int, float) and math.isfinite(value) and value >= 0})
+    for key in ('game_metrics_source', 'game_metrics_status', 'game_metrics_note'):
+        if isinstance(vm.get(key), str): metrics[key] = ' '.join(vm[key].split())[:120]
+    return True
+
+
 def penalty(value, ideal, poor):
     return max(0, min(100, 100 * (poor - value) / (poor - ideal)))
 
@@ -115,14 +129,14 @@ def hud_lines(m, quality, fps):
         colored(title, status),
         colored(f"Game {fmt(m,'game_fps',' FPS')} · {fmt(m,'frametime_ms',' ms')} · stream {fmt(m,'stream_fps',' FPS')}", '65e6ac', 'Game performance'),
         colored(f"{m.get('resolution','—')} @ {fps} Hz target · {m.get('codec','—')} · {fmt(m,'bitrate_mbps',' Mbps')}", '8bc7ff', 'Stream delivery'),
-        colored(f"GPU {fmt(m,'gpu_pct','%')} · {fmt(m,'gpu_temp_c','°C')} · VRAM {vram}", 'c5a3ff', 'Thermals'),
-        colored(f"CPU {fmt(m,'cpu_pct','%')} / core {fmt(m,'cpu_max_core_pct','%')} · RAM {fmt(m,'ram_used_gib')} / {fmt(m,'ram_total_gib',' GiB')}", 'e4b5ee', 'RAM pressure'),
+        colored(f"GPU {fmt(m,'gpu_pct','%')} · {fmt(m,'gpu_temp_c','°C')} · VRAM {vram} · {fmt(m,'gpu_power_w',' W')} · {fmt(m,'gpu_clock_mhz',' MHz',0)}", 'c5a3ff', 'Thermals'),
+        colored(f"CPU {fmt(m,'cpu_pct','%')} / core {fmt(m,'cpu_max_core_pct','%')} · {fmt(m,'cpu_temp_c','°C')} · RAM {fmt(m,'ram_used_gib')} / {fmt(m,'ram_total_gib',' GiB')}", 'e4b5ee', 'RAM pressure'),
         colored(f"Decode {fmt(m,'decode_ms',' ms')} · host {fmt(m,'host_processing_ms',' ms')} · queue {fmt(m,'queue_ms',' ms')}", '89dceb', 'Client decode'),
         colored(f"RTT {fmt(m,'rtt_ms',' ms')} · probe jitter {fmt(m,'jitter_ms',' ms')} · {m.get('route','unknown')}", '89dceb', 'Network'),
         colored(f"Video drops {fmt(m,'network_drop_pct','%')} · pacing {fmt(m,'pacing_drop_pct','%')} · probe loss {fmt(m,'probe_loss_pct','%')}", '8bc7ff', 'Network'),
         colored(f"Rx {fmt(m,'incoming_fps',' FPS')} · decoded {fmt(m,'decode_fps',' FPS')} · render {fmt(m,'render_ms',' ms')}", 'b9cadb', 'Stream delivery'),
         colored(f"RTT variance {fmt(m,'rtt_variance_ms',' ms')} · {quality['bottleneck']}", status),
-        colored('Encode-only / video packet loss: — · Ctrl+Alt+Shift+H', '8c9bac'),
+        colored(m.get('game_metrics_note') or 'Game source: MangoHud · Ctrl+Alt+Shift+H', '8c9bac'),
     ]
 
 
@@ -176,6 +190,14 @@ def save_history(path, meta, samples):
         atomic(path, json.dumps(history, indent=2))
 
 
+def append_metrics(path, sample):
+    # Bound a long-running session to two 16 MiB files; history keeps its summary.
+    if path.exists() and path.stat().st_size >= 16*1024**2:
+        path.replace(path.with_name(path.name+'.1'))
+    with path.open('a') as output:
+        output.write(json.dumps(sample, allow_nan=False)+'\n')
+
+
 def run(args):
     directory = Path(args.directory)
     meta = read_json(directory / 'host.json')
@@ -187,46 +209,44 @@ def run(args):
     # Fresh file per stream prevents old telemetry being shown on reconnect.
     log = directory / 'metrics.jsonl'
     try:
-        with log.open('a', buffering=1) as output:
-            while process_identity(args.pid) == identity:
-                tick = time.monotonic()
-                m = {}
-                raw = directory / 'moonlight.txt'
-                try:
-                    if 0 <= time.time() - raw.stat().st_mtime < 5:
-                        m.update(parse_moonlight(raw.read_text()[:8192]))
-                except OSError: pass
-                try:
-                    with urllib.request.urlopen(f'http://{args.ip}:48199/performance.json', timeout=1) as response:
-                        vm = json.loads(response.read(16384))
-                    if (vm.get('game_id') == meta.get('game_id') and vm.get('session_id') == meta.get('session_id')
-                            and 0 <= time.time() - vm.get('updated', 0) < 6):
-                        m.update({k: v for k, v in vm.items() if k not in ('schema', 'updated', 'source')
-                                  and isinstance(v, (int, float)) and math.isfinite(v)})
-                except (OSError, ValueError): pass
-                try:
-                    result = subprocess.run(['ping', '-n', '-c', '1', '-W', '1', args.ip],
-                                            capture_output=True, text=True, timeout=2)
-                    match = re.search(r'time[=<]([\d.]+)', result.stdout)
-                    probes.append(float(match[1]) if match else None)
-                except (OSError, subprocess.SubprocessError): probes.append(None)
-                rtts = [v for v in probes if v is not None]
-                if len(probes) >= 5:
-                    m['probe_loss_pct'] = 100 * (len(probes) - len(rtts)) / len(probes)
-                    differences = [abs(a-b) for a,b in zip(probes, list(probes)[1:]) if a is not None and b is not None]
-                    if differences: m['jitter_ms'] = statistics.mean(differences)
-                if 'rtt_ms' not in m and rtts: m['rtt_ms'] = statistics.mean(rtts)
-                if tick - last_route > 5:
-                    route_name, last_route = route(args.ip), tick
-                m['route'] = route_name
-                quality = assess(m, args.fps)
-                sample = {'updated': time.time(), 'metrics': m, 'quality': quality}
-                samples.append(sample); output.write(json.dumps(sample, allow_nan=False) + '\n')
-                atomic(directory / 'latest.json', json.dumps(sample, allow_nan=False))
-                atomic(directory / 'hud.txt', '\n'.join(hud_lines(m, quality, args.fps)))
-                if tick - last_history >= 60:
-                    save_history(Path(args.history), meta, list(samples)); last_history = tick
-                time.sleep(max(.1, 2 - (time.monotonic() - tick)))
+        while process_identity(args.pid) == identity:
+            tick = time.monotonic()
+            m = {}
+            raw = directory / 'moonlight.txt'
+            try:
+                if 0 <= time.time() - raw.stat().st_mtime < 5:
+                    m.update(parse_moonlight(raw.read_text()[:8192]))
+            except OSError: pass
+            try:
+                with urllib.request.urlopen(f'http://{args.ip}:48199/performance.json', timeout=1) as response:
+                    vm = json.loads(response.read(16384))
+                if not merge_vm_metrics(m, vm, meta):
+                    m['game_metrics_note'] = 'Waiting for current VM telemetry'
+            except (OSError, ValueError):
+                m['game_metrics_note'] = 'VM telemetry temporarily unavailable'
+            try:
+                result = subprocess.run(['ping', '-n', '-c', '1', '-W', '1', args.ip],
+                                        capture_output=True, text=True, timeout=2)
+                match = re.search(r'time[=<]([\d.]+)', result.stdout)
+                probes.append(float(match[1]) if match else None)
+            except (OSError, subprocess.SubprocessError): probes.append(None)
+            rtts = [v for v in probes if v is not None]
+            if len(probes) >= 5:
+                m['probe_loss_pct'] = 100 * (len(probes) - len(rtts)) / len(probes)
+                differences = [abs(a-b) for a,b in zip(probes, list(probes)[1:]) if a is not None and b is not None]
+                if differences: m['jitter_ms'] = statistics.mean(differences)
+            if 'rtt_ms' not in m and rtts: m['rtt_ms'] = statistics.mean(rtts)
+            if tick - last_route > 5:
+                route_name, last_route = route(args.ip), tick
+            m['route'] = route_name
+            quality = assess(m, args.fps)
+            sample = {'updated': time.time(), 'metrics': m, 'quality': quality}
+            samples.append(sample); append_metrics(log, sample)
+            atomic(directory / 'latest.json', json.dumps(sample, allow_nan=False))
+            atomic(directory / 'hud.txt', '\n'.join(hud_lines(m, quality, args.fps)))
+            if tick - last_history >= 60:
+                save_history(Path(args.history), meta, list(samples)); last_history = tick
+            time.sleep(max(.1, 1 - (time.monotonic() - tick)))
     finally:
         if time.monotonic() - started >= 60:
             save_history(Path(args.history), meta, list(samples))

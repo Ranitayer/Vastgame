@@ -55,6 +55,10 @@ warn() {
 }
 
 die() {
+    if [[ "${VG_FAILURE_INSTANCE:-}" =~ ^[0-9]+$ ]] && declare -F collect_failure_report >/dev/null; then
+        progress_clear
+        collect_failure_report "$VG_FAILURE_INSTANCE" "$*"
+    fi
     printf '\nERROR: %s\n' "$*" >&2
     exit 1
 }
@@ -70,4 +74,3 @@ for c in flock vastai jq column curl tailscale ssh timeout sed grep tr date pyth
         die "Missing command: $c"
 done
 }
-

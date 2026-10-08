@@ -1,0 +1,5 @@
+{
+  "moonlight": {"url":"https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.2.0/MoonlightPortable-x64-6.2.0.zip","sha256":"6f91d268b41ed5ca8066d9d7578dc403b8db190991ff48f00b1700465f8f7ebf"},
+  "tailscale": {"url":"https://pkgs.tailscale.com/stable/tailscale-setup-1.104.1-amd64.msi","sha256":"6da8bcdb0d45a214cae0e8a88c2987ad48dec134bf04dffb9c05f1354c02b0b4"},
+  "ubuntu": {"url":"https://releases.ubuntu.com/24.04.5/ubuntu-24.04.5-wsl-amd64.wsl","sha256":"bb415d824822c4b878125729af451a5d18fb13d1cf5cbed9a7393ad64ac6039e"}
+}

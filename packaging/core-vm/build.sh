@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 cd "$(dirname "$0")/../.."
+mkdir -p build
+exec 9>build/.cleanup.lock
+flock -n 9 || { echo 'Another Core build or cleanup is active'; exit 1; }
 [[ $(uname -m) == x86_64 ]] || { echo 'Core VM build requires x86_64'; exit 1; }
 # libguestfs is root inside its appliance; the host process must remain unprivileged.
 # passt drops host-root privileges and cannot access root-private socket directories.

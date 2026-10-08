@@ -8,6 +8,42 @@ import unittest
 
 
 class EndpointTests(unittest.TestCase):
+    def test_backup_uses_guest_manifest_and_isolated_helper_without_local_manifest(self):
+        root=Path(__file__).resolve().parents[1]
+        code='''
+source "$PROJECT/src/manager/persistence.sh"
+instance_json() { echo '{"id":123,"label":"vastgame-123"}'; }
+verified_state_endpoint() { printf 'host\\t22\\n'; }
+valid_game_id() { [[ "$1" == fixture ]]; }
+game_manifest() { echo 'LOCAL_MANIFEST_MUST_NOT_BE_USED' >&2; return 99; }
+warn() { echo "$*" >&2; }
+ssh() {
+    command="${@: -1}"
+    printf '%s\\n' "$command" >> "$CALLS"
+    case "$command" in
+        'cat /var/lib/vast-gaming/status/instance-label') echo vastgame-123 ;;
+        'cat /var/lib/vast-gaming/status/session.json') echo '{"game_id":"fixture"}' ;;
+        'cat /srv/gaming/profiles/fixture/manifest.json') echo '{"schema":1,"id":"fixture","state":{"saves":["custom/save"]}}' ;;
+        'bash -c '*) cat > "$UPLOADED_HELPER" ;;
+        'python3 /opt/vastgame-state/'*) [[ "$command" == *'--manifest-sha '* ]] ;;
+        'cat /srv/gaming/profiles/fixture/backup-receipt.json') echo '{"schema":1,"instance_id":"123","game_id":"fixture","snapshot":"verified"}' ;;
+        *) echo 'Unexpected SSH command' >&2; return 98 ;;
+    esac
+}
+remote_state backup 123 fixture
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            result=subprocess.run(['bash','-Eeuo','pipefail','-c',code],
+                env=dict(os.environ,PROJECT=str(root),STATEDIR=tmp,RUNTIME_DIR=str(root/'src/runtime'),
+                         CALLS=str(Path(tmp)/'calls'),UPLOADED_HELPER=str(Path(tmp)/'helper')),
+                capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            commands=(Path(tmp)/'calls').read_text()
+            self.assertNotIn('cat > /srv/gaming/profiles', commands)
+            self.assertNotIn('tar -C /opt/vastgame', commands)
+            self.assertNotIn('LOCAL_MANIFEST', result.stderr)
+            self.assertEqual((Path(tmp)/'helper').read_bytes(), (root/'src/runtime/game_state.py').read_bytes())
+
     def run_probe(self, primary='fail', public='match', info=None):
         cli=cli_source()
         helper=cli[cli.index('verified_state_endpoint() {'):cli.index('\nremote_state()')]

@@ -82,9 +82,46 @@ native_screen_refresh() {
     printf '%s\n' "$rate"
 }
 
-moonlight_game_options() {
-    printf '%s\n' --resolution "${1:-$(native_screen_resolution)}" --fps "${2:-$(native_screen_refresh)}" \
-        --display-mode fullscreen --no-absolute-mouse --multi-controller --capture-system-keys never
+stream_settings_file() {
+    if [[ "${VASTGAME_WINDOWS:-0}" == 1 ]]; then
+        jq -er '.application + "/stream.json"' "$CFGDIR/windows.json"
+    else
+        printf '%s\n' "$CFGDIR/stream.json"
+    fi
+}
+
+read_stream_settings() {
+    local path
+    path="$(stream_settings_file)" || return 1
+    python3 "$CLIENT_DIR/stream_settings.py" read "$path" "${VASTGAME_WINDOWS:-0}"
+}
+
+edit_stream_settings() {
+    local path defaults
+    local -a editor
+    path="$(stream_settings_file)" || die "Cannot locate stream settings; complete Windows setup first"
+    if [[ ! -e "$path" ]]; then
+        defaults="$(read_stream_settings)" || die "Cannot create default stream settings"
+        mkdir -p "$(dirname "$path")"
+        printf '%s\n' "$defaults" > "$path"
+        chmod 600 "$path"
+    fi
+    echo "Stream settings: $path"
+    echo 'Save, then reconnect Moonlight to apply changes.'
+    if [[ "${VASTGAME_WINDOWS:-0}" == 1 ]]; then
+        vastgame-native edit-stream "$path"
+        return
+    fi
+    if [[ -n "${VISUAL:-${EDITOR:-}}" ]]; then
+        defaults="$(python3 -c 'import shlex,sys; print("\n".join(shlex.split(sys.argv[1])))' "${VISUAL:-$EDITOR}")" || die "Invalid editor setting"
+        mapfile -t editor <<<"$defaults"
+        "${editor[@]}" "$path"
+        return
+    fi
+    for defaults in kate kwrite gedit mousepad code nano vi; do
+        if command -v "$defaults" >/dev/null 2>&1; then "$defaults" "$path"; return; fi
+    done
+    die "No text editor found. Edit $path manually or set EDITOR"
 }
 
 prepare_performance_hud() {
@@ -106,7 +143,7 @@ launch_moonlight() {
     verify_peer_identity "$ip" || die "VM launch identity changed; refusing Moonlight connection"
     local list_out
     local rc
-    local app="" session="" session_id="" expected="" requested resolution refresh
+    local app="" session="" session_id="" expected="" requested resolution refresh stream_config settings_path
     local -a ml game_options hud_environment
     local hud_library="" hud_directory="" host_info crash_directory="" moonlight_log="$STATEDIR/moonlight.log"
 
@@ -164,12 +201,16 @@ launch_moonlight() {
         list_out="$(printf '%s\n' "$list_out" | sed 's/\r$//')"
     fi
     if (( rc != 0 )) && grep -Eq 'symbol lookup error:|error while loading shared libraries:' <<<"$list_out"; then
+        printf '%s\n' "$list_out" | python3 "$CLIENT_DIR/failure_report.py" client "$STATEDIR" \
+            "$(cat "$INSTANCE_FILE")" 2>/dev/null || true
         printf '%s\n' "$list_out" >&2
         warn "Moonlight cannot load its local libraries. Repair the client installation; VM retained."
         return 1
     fi
 
     if (( rc != 0 )); then
+        printf '%s\n' "$list_out" | python3 "$CLIENT_DIR/failure_report.py" client "$STATEDIR" \
+            "$(cat "$INSTANCE_FILE")" 2>/dev/null || true
         warn "Moonlight/Wolf pairing could not be verified."
         printf '%s
 ' "$list_out"
@@ -215,17 +256,26 @@ launch_moonlight() {
 
     requested="$(curl -fsS --connect-timeout 2 --max-time 3 "http://$ip:$STATUS_PORT/launch.json" 2>/dev/null | jq -r '.updated // 0' || echo 0)"
     [[ "$requested" =~ ^[0-9]+([.][0-9]+)?$ ]] || requested=0
-    resolution="$(native_screen_resolution)" || die "Cannot detect native screen resolution. VM retained."
-    refresh="$(native_screen_refresh)"
-    game_options=(--resolution "$resolution" --fps "$refresh" --display-mode fullscreen)
-    if [[ -n "$session_id" ]]; then
-        mapfile -t game_options < <(moonlight_game_options "$resolution" "$refresh")
+    stream_config="$(read_stream_settings)" || die "Fix stream.json before connecting. VM retained."
+    resolution="$(jq -r '.resolution' <<<"$stream_config")"
+    refresh="$(jq -r '.fps' <<<"$stream_config")"
+    if [[ "$resolution" == native ]]; then
+        resolution="$(native_screen_resolution)" || die "Cannot detect native screen resolution. VM retained."
     fi
-    echo "Streaming '$app' from $ip at native $resolution, $refresh Hz..."
-    [[ -z "$session_id" ]] || echo "Game input: captured relative mouse and controller passthrough"
+    if [[ "$refresh" == native ]]; then
+        refresh="$(native_screen_refresh)" || die "Cannot detect screen refresh rate. VM retained."
+    fi
+    settings_path="$(stream_settings_file)"
+    stream_config="$(python3 "$CLIENT_DIR/stream_settings.py" resolve "$settings_path" "${VASTGAME_WINDOWS:-0}" "$resolution" "$refresh")" || die "Invalid stream settings. VM retained."
+    resolution="$(jq -r '.resolution' <<<"$stream_config")"
+    refresh="$(jq -r '.fps' <<<"$stream_config")"
+    mapfile -t game_options < <(jq -r '.args[]' <<<"$stream_config")
+    echo "Streaming '$app' from $ip at $resolution, $refresh FPS target..."
+    echo "Video codec: $(jq -r '.video_codec' <<<"$stream_config"); bitrate: $(jq -r 'if .bitrate_mbps == null then "Moonlight default" else "\(.bitrate_mbps) Mbps" end' <<<"$stream_config")"
+    [[ -z "$session_id" ]] || echo "Mouse mode: $(jq -r 'if .moonlight_options["absolute-mouse"] then "absolute" else "captured relative" end' <<<"$stream_config"); controller passthrough"
 
     hud_environment=()
-    if [[ -n "$session_id" && "${ml[0]}" != flatpak ]] && readelf -d "$(command -v "${ml[0]}")" 2>/dev/null | grep -q libSDL2_ttf && hud_library="$(prepare_performance_hud)"; then
+    if [[ -n "$session_id" && "${ml[0]}" != flatpak && "$(jq -r ' .moonlight_options["performance-overlay"]' <<<"$stream_config")" == true ]] && readelf -d "$(command -v "${ml[0]}")" 2>/dev/null | grep -q libSDL2_ttf && hud_library="$(prepare_performance_hud)"; then
         hud_directory="$(mktemp -d "$STATEDIR/hud.XXXXXX")"
         host_info="$(instance_json "$(cat "$INSTANCE_FILE")" 2>/dev/null || echo '{}')"
         jq --argjson session "$session" --arg resolution "$resolution" --argjson fps "$refresh" \
@@ -235,12 +285,10 @@ launch_moonlight() {
         hud_environment=("LD_PRELOAD=$hud_library${LD_PRELOAD:+:$LD_PRELOAD}" "VASTGAME_HUD_DIR=$hud_directory"
             'VASTGAME_HUD_FONT=/usr/share/fonts/TTF/DejaVuSans.ttf'
             "VASTGAME_HUD_SCALE=$(awk -v h="${resolution#*x}" 'BEGIN {print h/1080}')")
-        game_options+=(--performance-overlay)
         echo "Performance HUD: full stats · Ctrl+Alt+Shift+H toggle · Alt+Tab switches local windows"
     elif [[ -n "$session_id" && "${VASTGAME_WINDOWS:-0}" == 1 ]]; then
-        game_options+=(--performance-overlay)
         echo "Moonlight statistics: Ctrl+Alt+Shift+S toggle (native Windows overlay)"
-    elif [[ -n "$session_id" ]]; then
+    elif [[ -n "$session_id" && "$(jq -r '.moonlight_options["performance-overlay"]' <<<"$stream_config")" == true ]]; then
         warn "Custom HUD unavailable (requires native SDL2 Moonlight and SDL2/SDL_ttf build dependencies). Game launch continues."
     fi
 
@@ -293,4 +341,3 @@ launch_moonlight() {
     fi
     return 0
 }
-

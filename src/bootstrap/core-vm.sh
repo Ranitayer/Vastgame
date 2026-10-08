@@ -30,6 +30,17 @@ prepare_core_modeset() {
 
 install_core_dependencies() {
   echo '[VASTGAME] Preparing headless Core VM dependencies'
+  # Driver/library upgrades during a live session require a reload or reboot.
+  # Keep other automatic security updates enabled; manage GPU upgrades between sessions.
+  mkdir -p /etc/apt/apt.conf.d
+  cat > /etc/apt/apt.conf.d/52vastgame-driver-stability <<'DRIVER_POLICY'
+Unattended-Upgrade::Package-Blacklist {
+  "^nvidia-";
+  "^libnvidia-";
+  "^linux-modules-nvidia-";
+  "^xserver-xorg-video-nvidia-";
+};
+DRIVER_POLICY
   export DEBIAN_FRONTEND=noninteractive
   local item command package toolkit=0 bootstrap=0
   local version="${NVIDIA_CONTAINER_TOOLKIT_VERSION:-1.20.1-1}"
@@ -83,6 +94,22 @@ install_core_dependencies() {
   fi
  }
 
+prepare_core_gpu_runtime() {
+  local error
+  if ! error="$(timeout 30 nvidia-smi -L 2>&1)"; then
+    echo "[VASTGAME] ERROR: VM GPU driver is not ready: $error"
+    echo '[VASTGAME] Driver/library mismatch requires a safe driver reload while idle or a VM reboot; no reload was forced.'
+    return 1
+  fi
+  # Refresh device definitions only after the actual GPU driver is usable.
+  if systemctl cat nvidia-cdi-refresh.service >/dev/null 2>&1; then
+    timeout 30 systemctl restart nvidia-cdi-refresh.service || {
+      echo '[VASTGAME] ERROR: NVIDIA CDI refresh failed; inspect journalctl -u nvidia-cdi-refresh.service'
+      return 1
+    }
+  fi
+}
+
 prepare_core_vm() {
   local core_docker_restart=0
   install_core_dependencies
@@ -95,7 +122,7 @@ prepare_core_vm() {
   fi
   systemctl enable --now docker
   command -v nvidia-smi >/dev/null || { echo '[VASTGAME] ERROR: Base VM NVIDIA driver missing'; return 1; }
-  timeout 30 nvidia-smi >/dev/null || { echo '[VASTGAME] ERROR: Base VM GPU driver is not ready'; return 1; }
+  prepare_core_gpu_runtime
   timeout 30 docker info >/dev/null || { echo '[VASTGAME] ERROR: Core VM Docker is not ready'; return 1; }
   modprobe uinput || true
   modprobe uhid || true

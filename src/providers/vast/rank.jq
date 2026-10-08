@@ -242,7 +242,10 @@
 
         |
 
-        if ($x | length) == 0 then 0
+        ([$x.provisioning_failures[]? | select(.category == "provider_gpu" and (now - .time) < 604800)] | length) as $boot_failures |
+        if $boot_failures >= 2 then -30
+        elif $boot_failures == 1 then -18
+        elif ($x | length) == 0 then 0
 
         elif
             (($x.last_result // "") == "fail")

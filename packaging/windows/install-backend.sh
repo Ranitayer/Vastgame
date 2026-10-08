@@ -14,10 +14,30 @@ apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends \
 id "$user" >/dev/null 2>&1 || useradd -m -s /bin/bash "$user"
 home="$(getent passwd "$user" | cut -d: -f6)"
 mkdir -p "$home/.local/share/vastgame" "$home/.local/bin" "$home/.config/vastgame" "$home/.ssh"
-# Archives are built locally from an allowlist, and include no game archives or VM IDs.
-tar --no-same-owner -xf "$application/backend.tar" -C "$home"
+# Private imports include account configuration, never VM IDs or game archives.
 if [ -f "$application/accounts.tar" ]; then
-  tar --no-same-owner --skip-old-files -xf "$application/accounts.tar" -C "$home"
+  python3 - "$application/accounts.tar" "$home" <<'PY_ACCOUNTS'
+import re, sys, tarfile
+from pathlib import Path
+root=Path(sys.argv[2])
+allowed={'.config/vastai/vast_api_key','.config/vastai/vast_role','.config/rclone/rclone.conf',
+         '.config/vastgame/template_hash','.config/vastgame/bootstrap.json','.ssh/id_ed25519','.ssh/id_ed25519.pub'}
+with tarfile.open(sys.argv[1]) as archive:
+    seen=set(); total=0
+    for member in archive:
+        name=member.name; total+=member.size
+        if name in ('identity.json','moonlight.ini'): continue
+        if (not member.isfile() or name in seen or total>64*1024**2 or
+            not (name in allowed or re.fullmatch(r'\.config/vastgame/games/[a-z0-9][a-z0-9._-]{0,63}/manifest\.json',name))):
+            raise ValueError('Unsafe private account bundle')
+        seen.add(name)
+        target=root/name
+        if target.is_symlink() or not target.resolve().is_relative_to(root.resolve()): raise ValueError('Unsafe account destination')
+        if target.exists(): continue
+        target.parent.mkdir(parents=True,exist_ok=True)
+        with archive.extractfile(member) as source, target.open('xb') as output: output.write(source.read())
+        target.chmod(0o600)
+PY_ACCOUNTS
 fi
 python3 -m venv "$home/.local/share/vastgame/venv"
 "$home/.local/share/vastgame/venv/bin/pip" install --disable-pip-version-check 'vastai==1.8.3' 'PyYAML==6.0.3'
@@ -25,11 +45,8 @@ cp "$application/run-vastgame.sh" "$home/.local/bin/vastgame"
 for name in tailscale moonlight vastgame-native ping; do
   cp "$application/windows-bridge.sh" "$home/.local/bin/$name"
 done
-python3 - "$home/.config/vastgame/windows.json" "$application" "$tailscale" "$powershell" <<'PY'
-import json, sys
-from pathlib import Path
-Path(sys.argv[1]).write_text(json.dumps(dict(application=sys.argv[2], tailscale=sys.argv[3], powershell=sys.argv[4])))
-PY
+python3 "$application/apply_update.py" --fresh --home "$home" --bundle "$application" \
+  --application "$application" --tailscale "$tailscale" --powershell "$powershell"
 chown -R "$user:$user" "$home/.local" "$home/.config" "$home/.ssh"
 chmod 700 "$home" "$home/.ssh" "$home/.config/vastai" "$home/.config/rclone"
 find "$home/.ssh" "$home/.config/vastai" "$home/.config/rclone" -type f -exec chmod 600 {} +

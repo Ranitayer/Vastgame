@@ -106,6 +106,27 @@ destroy_verified 123
             self.assertNotEqual(result.returncode,0)
             self.assertIn('Another Vastgame operation',result.stdout)
 
+    def test_ingest_does_not_take_lifecycle_lock(self):
+        dispatcher = (ROOT/'src/manager/commands.sh').read_text().split('# Normalize long',1)[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            import fcntl
+            with (Path(tmp)/'lifecycle.lock').open('a') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                result=self.shell(f'STATEDIR="{tmp}"; die() {{ echo "$*"; exit 1; }}; game_ingest() {{ echo imported; }}; set -- ingest url fixture; '+'# Normalize long'+dispatcher)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('imported',result.stdout)
+
+    def test_ingest_respects_catalog_writer_lock(self):
+        dispatcher = (ROOT/'src/manager/commands.sh').read_text().split('# Normalize long',1)[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            import fcntl
+            with (Path(tmp)/'catalog.lock').open('a') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                result=self.shell(f'STATEDIR="{tmp}"; die() {{ echo "$*"; exit 1; }}; game_ingest() {{ echo imported; }}; set -- ingest url fixture; '+'# Normalize long'+dispatcher)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('catalog operation',result.stdout)
+            self.assertNotIn('imported',result.stdout)
+
     def test_disk_peak_accounts_for_bounded_parts_not_full_archive(self):
         source = (ROOT/'src/manager/catalog.sh').read_text()
         function = source[source.index('calculate_disk_requirement() {'):source.index('\nvalid_game_id()')]
@@ -119,60 +140,92 @@ destroy_verified 123
 
 
 class ImmutablePackageTests(unittest.TestCase):
+    def fixture(self, root):
+        source=root/'source'; source.mkdir()
+        (source/'Game.exe').write_bytes(b'MZ'+bytes(58)+(64).to_bytes(4, 'little')+b'PE\0\0')
+        manifest=root/'manifest.json'
+        from game_catalog import create
+        manifest.write_text(json.dumps(create(source, 'fixture')))
+        return source, manifest
+
+    def stream(self, source, work, digest):
+        data=(source/'Game.exe').read_bytes()
+        digest.update(data)
+        part=work/'part-00000'; part.write_bytes(data)
+        yield part, dict(name=part.name, size=len(data), sha256=package.hash_file(part)), package.hash_file(part, 'md5')
+
     def test_bad_remote_hash_never_replaces_previous_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp); archive=root/'game'; archive.write_bytes(b'compressed')
-            parts=root/'parts'; parts.mkdir(); (parts/'part-00000').write_bytes(b'compressed')
-            manifest=root/'manifest.json'; original=json.dumps(dict(id='fixture',package={'archive':'old'})); manifest.write_text(original)
-            with patch.object(package.subprocess,'run'), patch.object(package.subprocess,'check_output', return_value='bad  part-00000\n'):
-                with self.assertRaisesRegex(ValueError,'verification failed'):
-                    package.publish(manifest,archive,parts,100)
-            self.assertEqual(manifest.read_text(),original)
+            root=Path(tmp); source, manifest=self.fixture(root); original=manifest.read_text()
+            with patch.object(package, 'compressed_parts', side_effect=self.stream), \
+                 patch.object(package, 'prepare_upload_folder'), \
+                 patch.object(package, 'copy_part'), patch.object(package, 'remote_md5', return_value='bad'):
+                with self.assertRaisesRegex(ValueError, 'verification failed'):
+                    package.publish(manifest, source, root/'work')
+            self.assertEqual(manifest.read_text(), original)
 
-    def test_content_address_is_stable_and_changed_bytes_have_new_identity(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'archive'; path.write_bytes(b'first'); first=package.hash_file(path)
-            self.assertEqual(first,package.hash_file(path))
-            path.write_bytes(b'second'); self.assertNotEqual(first,package.hash_file(path))
-
-    def test_successful_publications_keep_old_content_versions(self):
+    def test_successful_publications_keep_old_content_and_commit_manifest_last(self):
         import shutil
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp); archive=root/'game'; parts=root/'parts'; parts.mkdir()
-            remote=root/'remote'; remote.mkdir()
-            manifest=root/'manifest.json'; manifest.write_text(json.dumps(dict(id='fixture')))
-            def target(value):
-                return remote/value.split(':',1)[1] if ':' in value else Path(value)
+            root=Path(tmp); source, manifest=self.fixture(root); remote=root/'remote'; calls=[]
+            def target(value): return remote/value.split(':',1)[1]
             def run(args, **kwargs):
-                dest=target(args[3]); src=target(args[2])
-                dest.parent.mkdir(parents=True,exist_ok=True)
-                if args[1] == 'copy':
-                    dest.mkdir(exist_ok=True)
-                    for file in src.iterdir(): shutil.copyfile(file,dest/file.name)
-                else: shutil.copyfile(src,dest)
+                calls.append(args[3]); dest=target(args[3]); dest.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(args[2],dest)
             def output(args, **kwargs):
                 if args[1] == 'hashsum':
-                    return '\n'.join(package.hash_file(p,'md5')+'  '+p.name for p in target(args[3]).iterdir())
+                    p=target(args[3]); return package.hash_file(p,'md5')+'  '+p.name+'\n'
                 return target(args[2]).read_bytes()
-            with patch.object(package.subprocess,'run',side_effect=run), patch.object(package.subprocess,'check_output',side_effect=output):
+            with patch.object(package,'compressed_parts',side_effect=self.stream), \
+                 patch.object(package,'prepare_upload_folder'), \
+                 patch.object(package,'copy_part',side_effect=lambda args, *ignored: run(args)), \
+                 patch.object(package.subprocess,'run',side_effect=run), \
+                 patch.object(package.subprocess,'check_output',side_effect=output):
                 for content in (b'first', b'second'):
-                    archive.write_bytes(content); (parts/'part-00000').write_bytes(content)
-                    package.publish(manifest,archive,parts,100)
-                    record=json.loads(manifest.read_text())
-                    self.assertIn(package.hash_file(archive),record['package']['archive'])
-            versions=list((remote/'VastGaming/games/fixture').iterdir())
+                    with (source/'Game.exe').open('ab') as file: file.write(content)
+                    package.publish(manifest,source,root/'work')
+                    self.assertIn('/manifests/',calls[-1])
+            versions=[p for p in (remote/'VastGaming/games/fixture').iterdir() if len(p.name)==64]
             self.assertEqual(len(versions),2)
             self.assertTrue(all((p/'COMMITTED.json').is_file() for p in versions))
+            self.assertEqual(len(list((remote/'VastGaming/games/fixture/objects').iterdir())),2)
+
+    def test_upload_folder_is_created_before_parallel_parts(self):
+        events = []
+        def listing(args, **kwargs):
+            events.append('list')
+            name = 'fixture' if args[2].endswith('/games') else 'objects'
+            return json.dumps([dict(Name=name, IsDir=True)])
+        with patch.object(package.subprocess, 'run', side_effect=lambda *a, **k: events.append('mkdir')), \
+             patch.object(package.subprocess, 'check_output', side_effect=listing):
+            package.prepare_upload_folder('remote:root', 'fixture')
+        self.assertEqual(events, ['mkdir', 'list', 'list'])
+
+    def test_duplicate_game_folders_fail_before_packaging(self):
+        with patch.object(package.subprocess, 'run'), \
+             patch.object(package.subprocess, 'check_output', return_value=json.dumps(
+                 [dict(Name='fixture'), dict(Name='fixture')])):
+            with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                package.prepare_upload_folder('remote:root', 'fixture')
+
+    def test_retry_receipt_still_checks_remote_hash_without_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'part-00000'; path.write_bytes(b'bytes')
+            part=dict(name=path.name, sha256=package.hash_file(path), object='games/fixture/objects/hash.part')
+            md5=package.hash_file(path,'md5')
+            with patch.object(package.subprocess,'run') as upload, patch.object(package,'remote_md5',return_value=md5) as verify:
+                package.upload_part(path,part,md5,'remote',dict(part,md5=md5))
+                upload.assert_not_called(); verify.assert_called_once()
 
     def test_real_rclone_publication_retry_is_idempotent(self):
         import shutil
-        if not shutil.which('rclone'):
-            self.skipTest('rclone required for local transport verification')
+        if not all(shutil.which(command) for command in ('rclone', 'tar', 'zstd')):
+            self.skipTest('rclone, tar and zstd required for local transport verification')
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp); archive=root/'archive'; parts=root/'parts'; parts.mkdir()
-            manifest=root/'manifest.json'; manifest.write_text(json.dumps(dict(id='fixture',version='v1')))
-            for content in (b'first package', b'first package', b'updated package'):
-                archive.write_bytes(content); (parts/'part-00000').write_bytes(content)
-                package.publish(manifest,archive,parts,100,remote=str(root/'remote'))
-            self.assertEqual(len(list((root/'remote/games/fixture').iterdir())),2)
+            root=Path(tmp); source, manifest=self.fixture(root)
+            for content in (b'', b'', b'updated'):
+                with (source/'Game.exe').open('ab') as file: file.write(content)
+                package.publish(manifest,source,root/'work',remote=str(root/'remote'))
+            versions=[p for p in (root/'remote/games/fixture').iterdir() if len(p.name)==64]
+            self.assertEqual(len(versions),2)
             self.assertEqual(json.loads(manifest.read_text())['version'],'v1')

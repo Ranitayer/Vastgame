@@ -50,101 +50,29 @@ game_discover_saves() {
 }
 
 game_add() {
-    local folder="${1:-}" id="${2:-}" exe name manifest dlss=false
-    if [[ "$folder" == "--dlss" ]]; then
-        dlss=true
-        folder="${2:-}"
-        id="${3:-}"
-    elif [[ "${3:-}" == "--dlss" ]]; then
-        dlss=true
-    fi
-    [[ -d "$folder" ]] || die "Game folder not found: $folder"
-    folder="$(cd "$folder" && pwd)"
-    name="$(basename "$folder")"
-    if [[ -z "$id" ]]; then
-        id="$(tr '[:upper:]' '[:lower:]' <<<"$name" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
-    fi
-    valid_game_id "$id" || die "Invalid game id: $id"
-    [[ ! -e "$(game_manifest "$id")" ]] || die "Game already exists: $id"
-    mapfile -t exes < <(find "$folder" -type f -iname '*.exe' -printf '%P\n' |
-        grep -Eiv '(^|/)(_commonredist|redist|crash|crashreport|installer|unins)' |
-        sort | head -21)
-    (( ${#exes[@]} > 0 )) ||
-        mapfile -t exes < <(find "$folder" -type f -iname '*.exe' -printf '%P\n' | sort | head -21)
-    (( ${#exes[@]} > 0 )) || die "No Windows executable found in $folder"
-    local preferred="" candidate base lower_name lower_id lower_base
-    local -a original_exes
-    lower_name="$(tr '[:upper:]' '[:lower:]' <<<"$name")"
-    lower_id="$(tr '[:upper:]' '[:lower:]' <<<"$id")"
-    for candidate in "${exes[@]}"; do
-        base="${candidate##*/}"
-        base="${base%.*}"
-        lower_base="$(tr '[:upper:]' '[:lower:]' <<<"$base")"
-        if [[ "$lower_base" == "$lower_name" || "$lower_base" == "$lower_id" ]]; then
-            preferred="$candidate"
-            break
-        fi
+    python3 "$CLIENT_DIR/game_catalog.py" add "$@" --catalog "$GAME_ROOT"
+}
+
+game_ingest() {
+    local dependency
+    for dependency in rclone tar zstd; do
+        command -v "$dependency" >/dev/null 2>&1 || die "Missing import dependency: $dependency"
     done
-    if [[ -n "$preferred" ]]; then
-        original_exes=("${exes[@]}")
-        exes=("$preferred")
-        for candidate in "${original_exes[@]}"; do
-            [[ "$candidate" == "$preferred" ]] || exes+=("$candidate")
-        done
-    fi
-    exe="${exes[0]}"
-    if (( ${#exes[@]} > 1 )); then
-        warn "Multiple executables found; selecting $exe. Review with game inspect: ${exes[*]}"
-    fi
-    mkdir -p "$GAME_ROOT/$id"
-    jq -n --arg id "$id" --arg name "$name" --arg root "$folder" --arg exe "$exe" --argjson dlss "$dlss" \
-      '{schema:1,id:$id,name:$name,version:"v1",source:{path:$root},game:{executable:$exe,working_dir:(($exe|split("/")[:-1])|join("/")),arguments:[]},runner:{type:"wine",version:"ge-proton"},environment:{},state:{saves:[],configs:[],shaders:[]},compatibility:{nvidia_ngx:$dlss}}' \
-      > "$(game_manifest "$id")"
-    if [[ -f "$CLIENT_DIR/save_discovery.py" ]]; then
-        ensure_save_catalog
-        python3 "$CLIENT_DIR/save_discovery.py" "$(game_manifest "$id")" --catalog "$CACHE_DIR/ludusavi.json.gz" ||
-            warn "Known save lookup unavailable; existing prefix persistence remains enabled"
-    fi
-    jq . "$(game_manifest "$id")"
-    ok "Added game $id"
+    python3 "$CLIENT_DIR/ingest.py" "$@" --catalog "$GAME_ROOT" --cache "$CACHE_DIR/ingest"
 }
 
 game_package() {
-    local id="${1:-}" manifest source archive sha unpacked parts_dir
+    local dependency
+    for dependency in rclone tar zstd; do
+        command -v "$dependency" >/dev/null 2>&1 || die "Missing package dependency: $dependency"
+    done
+    local id="${1:-}" manifest source
     valid_game_id "$id" || die "Usage: vastgame game package <id>"
-    command -v rclone >/dev/null 2>&1 || die "rclone is required for remote game packages"
     manifest="$(game_manifest "$id")"
     [[ -f "$manifest" ]] || die "Unknown game: $id"
     source="$(jq -r '.source.path // empty' "$manifest")"
     [[ -d "$source" ]] || die "Source folder is unavailable: $source"
-    archive="$GAME_ROOT/$id/game-v1.tar.zst"
-    sha="$archive.sha256"
-    unpacked="$(du -sB1 "$source" | awk '{print $1}')"
-    printf 'Packaging %s: %s\n' "$id" "$(numfmt --to=iec "$unpacked")"
-    if command -v pv >/dev/null 2>&1; then
-        tar -C "$source" -cf - . | pv -s "$unpacked" -pterb | zstd -q -f -T0 -o "$archive"
-    else
-        tar -C "$source" -cf - . | zstd -q -f -T0 -o "$archive"
-    fi
-    sha256sum "$archive" > "$sha"
-    parts_dir="$GAME_ROOT/$id/.parts-v1"
-    python3 - "$archive" "$parts_dir" <<'PY_SPLIT'
-from pathlib import Path
-import shutil, sys
-source, dest = Path(sys.argv[1]), Path(sys.argv[2])
-if dest.exists():
-    shutil.rmtree(dest)
-dest.mkdir(parents=True)
-with source.open('rb') as inp:
-    index = 0
-    while True:
-        data = inp.read(256 * 1024 * 1024)
-        if not data:
-            break
-        (dest / f'part-{index:05d}').write_bytes(data)
-        index += 1
-PY_SPLIT
-    python3 "$CLIENT_DIR/package_publish.py" "$manifest" "$archive" "$parts_dir" "$unpacked" ||
+    python3 "$CLIENT_DIR/package_publish.py" "$manifest" "$source" "$CACHE_DIR/package/$id" ||
         die "Package publication failed; previous package selection retained"
     ok "Packaged $id"
 }
@@ -161,18 +89,11 @@ game_list() {
 }
 
 game_validate() {
-    local id="${1:-}" manifest exe source
+    local id="${1:-}" manifest
     valid_game_id "$id" || die "Usage: vastgame game validate <id>"
     manifest="$(game_manifest "$id")"
     [[ -f "$manifest" ]] || die "Unknown game: $id"
-    jq -e --arg id "$id" '
-      .schema == 1 and .id == $id and (.name|type)=="string" and
-      (.game.executable|type)=="string" and (.game.executable|length)>0 and
-      ((.game.executable|startswith("/"))|not) and ((.game.executable|contains(".."))|not)
-    ' "$manifest" >/dev/null || die "Invalid manifest: $id"
-    exe="$(jq -r '.game.executable' "$manifest")"
-    source="$(jq -r '.source.path // empty' "$manifest")"
-    [[ -n "$source" && -f "$source/$exe" ]] || die "Executable missing from source: $source/$exe"
+    python3 "$CLIENT_DIR/game_catalog.py" validate "$manifest" --id "$id" || die "Invalid game: $id"
     ok "Manifest valid: $id"
 }
 
@@ -247,3 +168,9 @@ state_restore() {
     ok "Verified state restored for $gid"
 }
 
+state_resume() {
+    local gid="${1:-}" id
+    valid_game_id "$gid" || die "Usage: vastgame state resume <game-id>"
+    id="$(pick_instance)" || die "No Vastgame VM found"
+    remote_state resume "$id" "$gid" || die "Cannot release shutdown block; VM retained"
+}

@@ -14,15 +14,34 @@ bootstrap_log() {
 }
 
 VG_PROGRESS_LINES=0
+VG_PROGRESS_INLINE=0
 VG_STRUCTURED_PROGRESS=0
 VG_BOOTSTRAP_READY=0
 VG_RESTORE_METRICS='{}'
 
 progress_clear() {
+    if [[ -t 1 ]] && (( VG_PROGRESS_INLINE == 1 )); then
+        printf '\r\033[K'
+    fi
+    VG_PROGRESS_INLINE=0
     if [[ -t 1 ]] && (( VG_PROGRESS_LINES > 0 )); then
         printf '\033[%sA\033[J' "$VG_PROGRESS_LINES"
     fi
     VG_PROGRESS_LINES=0
+}
+
+VG_PROGRESS_LAST_KEY=""
+progress_line() {
+    local line="$1" key="$2"
+    if [[ ! -t 1 && "$key" == "$VG_PROGRESS_LAST_KEY" ]]; then return 0; fi
+    VG_PROGRESS_LAST_KEY="$key"
+    progress_clear
+    if [[ -t 1 ]]; then
+        printf '%s' "$line"
+        VG_PROGRESS_INLINE=1
+    else
+        printf '%s\n' "$line"
+    fi
 }
 
 # Animate cached state while a slow probe runs; never poll the provider at frame rate.
@@ -44,7 +63,19 @@ progress_run() {
         "$render"
         (
             trap 'kill $(jobs -pr) 2>/dev/null || true; exit 0' TERM INT
-            while true; do sleep 0.5 & wait $!; "$render"; done
+            # Account for rendering time instead of adding it to each 100 ms frame.
+            deadline=$(( ${EPOCHREALTIME/./} + 100000 ))
+            while true; do
+                remaining=$(( deadline - ${EPOCHREALTIME/./} ))
+                if (( remaining > 0 )); then
+                    printf -v delay '0.%06d' "$remaining"
+                    sleep "$delay" & wait $!
+                fi
+                "$render"
+                deadline=$(( deadline + 100000 ))
+                now_us="${EPOCHREALTIME/./}"
+                (( deadline > now_us )) || deadline=$(( now_us + 100000 ))
+            done
         ) 8>&- &
         VG_PROGRESS_ANIMATION_PID=$!
     fi
@@ -68,6 +99,7 @@ bootstrap_wait_frame() {
 VG_VAST_LAST_STATUS=""
 VG_VAST_ACTIVITY=""
 VG_VAST_ACTIVITY_AT=0
+VG_VAST_PHASE=0
 
 print_vast_progress() {
     local actual="$1" message="$2" seconds="$3" phase width frame key
@@ -77,11 +109,14 @@ print_vast_progress() {
         loading) phase=1 ;;
         *) phase=0 ;;
     esac
+    # Transient provider regressions must not reset completed milestones.
+    if (( phase < VG_VAST_PHASE )); then phase="$VG_VAST_PHASE"; fi
+    VG_VAST_PHASE="$phase"
     if [[ -n "$message" && "$message" != "$VG_VAST_ACTIVITY" ]]; then
         VG_VAST_ACTIVITY="$message"
         VG_VAST_ACTIVITY_AT="$seconds"
     fi
-    key="$actual|$VG_VAST_ACTIVITY"
+    key="$phase"
     # Redirected output is a concise event log; terminals get a live panel.
     if [[ ! -t 1 && "$key" == "$VG_VAST_LAST_STATUS" ]]; then
         return 0
@@ -89,7 +124,9 @@ print_vast_progress() {
     VG_VAST_LAST_STATUS="$key"
     width="$(tput cols 2>/dev/null || echo 80)"
     frame="$(python3 - "$phase" "$seconds" "$width" "$VG_VAST_ACTIVITY" "$VG_VAST_ACTIVITY_AT" <<'PY_VAST_PROGRESS'
-import sys, time
+import signal, sys, time
+# Stopping the animation can close this frame's command-substitution pipe.
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 phase, seconds, width = map(int, sys.argv[1:4])
 width = max(25, min(width, 120))
 activity, activity_at = sys.argv[4], int(sys.argv[5])
@@ -98,50 +135,44 @@ def duration(value):
     return f'{value // 60}m {value % 60:02d}s'
 def emit(value):
     print(''.join(c for c in value if c.isprintable())[:width-1])
-spinner = '|/-\\'[int(time.time()*2) % 4] if phase < 3 else 'OK'
-emit(f'VASTGAME  |  {labels[phase]}  |  Elapsed {duration(seconds)}')
+spinner = '|/-\\'[int(time.time()*10) % 4] if phase < 3 else 'OK'
 steps = ['Host', 'Image', 'Boot']
-emit('  ' + '  →  '.join(f'[{"OK" if i < phase else spinner if i == phase else " "}] {label}'
-                         for i, label in enumerate(steps)))
-lines = [line.strip() for line in activity.splitlines() if line.strip()]
-# Keep the most recent substantive layer update instead of a truncated layer ID.
-lines = [line for line in lines if not line.endswith(':')] or lines
-if lines:
-    age = seconds - activity_at
-    prefix = f'No new host update for {duration(age)} · ' if age >= 30 and phase < 3 else ''
-    emit('  ' + prefix + ' · '.join(lines[-2:]))
-else:
-    emit('  Waiting for the host to report startup activity')
+line = f'VASTGAME | {labels[phase]} | Elapsed {duration(seconds)}'
+line += ' | ' + ' · '.join(f'{label}:{"OK" if i < phase else spinner if i == phase else "wait"}'
+                         for i, label in enumerate(steps))
+lines = [value.strip() for value in activity.splitlines() if value.strip()]
+lines = [value for value in lines if not value.endswith(':')] or lines
+age = seconds - activity_at
+if age >= 30 and phase < 3:
+    line += f' | No new host update for {duration(age)}'
+elif lines:
+    line += ' | ' + lines[-1]
+emit(line)
 PY_VAST_PROGRESS
 )"
     progress_clear
-    printf '%s\n' "$frame"
     if [[ -t 1 ]]; then
-        VG_PROGRESS_LINES="$(printf '%s\n' "$frame" | wc -l)"
+        printf '%s' "$frame"
+        VG_PROGRESS_INLINE=1
+    else
+        printf '%s\n' "$frame"
     fi
 }
 
 print_tailscale_progress() {
     local seconds="$1" text="${2:-Waiting for vast-gaming on Tailscale...}" width line spinner
-    if [[ ! -t 1 && "${VG_TAILSCALE_WAIT_PRINTED:-0}" == 1 ]]; then
-        return 0
-    fi
-    VG_TAILSCALE_WAIT_PRINTED=1
     width="$(tput cols 2>/dev/null || echo 80)"
     (( width > 1 )) || width=80
     spinner='|/-\\'
     local tick="$(date +%s%N)"
-    tick=$((10#$tick / 500000000))
+    tick=$((10#$tick / 100000000))
     line="[${spinner:$((tick % 4)):1}] $text | Elapsed $(elapsed "$seconds")"
-    progress_clear
-    printf '%.*s\n' "$((width - 1))" "$line"
-    if [[ -t 1 ]]; then
-        VG_PROGRESS_LINES=1
-    fi
+    printf -v line '%.*s' "$((width - 1))" "$line"
+    progress_line "$line" "tailscale:$text"
 }
 
 print_bootstrap_progress() {
-    local id="$1" ip="$2" elapsed_s="${3:-0}" payload frame width reason
+    local id="$1" ip="$2" elapsed_s="${3:-0}" payload frame width reason key
     VG_BOOTSTRAP_READY=0
     VG_RESTORE_METRICS='{}'
     if (( $# >= 4 )); then
@@ -152,10 +183,8 @@ print_bootstrap_progress() {
     fi
     if ! jq -e '.version == 1 and (.tasks | type == "object")' \
         >/dev/null 2>&1 <<<"$payload"; then
-        progress_clear
         if (( VG_STRUCTURED_PROGRESS == 1 )); then
-            echo "Progress connection unavailable; waiting to reconnect (VM may still be working)."
-            [[ ! -t 1 ]] || VG_PROGRESS_LINES=1
+            print_tailscale_progress "$elapsed_s" "Progress unavailable; waiting to reconnect"
         else
             # Existing VMs with the old bootstrap still have the log endpoint.
             VG_BOOTSTRAP_READY=1
@@ -175,7 +204,8 @@ print_bootstrap_progress() {
     fi
     width="$(tput cols 2>/dev/null || echo 80)"
     frame="$(python3 - "$width" "$elapsed_s" "$payload" <<'PY_RENDER'
-import json, math, sys, time
+import json, math, signal, sys, time
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 data = json.loads(sys.argv[3])
 tasks = data['tasks']
@@ -190,52 +220,48 @@ def emit(text):
     print(''.join(c for c in text if c.isprintable())[:width-1])
 
 phase = tasks.get('phase', {}).get('action', 'Preparing')
-emit(f'VASTGAME  |  {phase}  |  Elapsed {duration(elapsed)}')
-for key, label in [('core', 'Runtime'), ('state', 'Saves / Lutris'),
-                   ('identity', 'Pairing'), ('game', 'Game'),
-                   ('images', 'Wolf / Lutris images'), ('proton', 'Proton'),
-                   ('dx12', 'DX12'), ('prefix', 'Game prefix'), ('setup', 'GPU / streaming')]:
-    item = tasks.get(key, {})
-    state = item.get('state', 'pending')
-    action = str(item.get('action', 'Waiting'))
+labels = [('game', 'Game'), ('images', 'Images'), ('core', 'Runtime'),
+          ('state', 'Saves'), ('identity', 'Pairing'), ('proton', 'Proton'),
+          ('dx12', 'DX12'), ('prefix', 'Prefix'), ('setup', 'GPU/stream')]
+active = next(((key, label, tasks[key]) for key, label in labels
+               if tasks.get(key, {}).get('state') == 'error'), None)
+active = active or next(((key, label, tasks[key]) for key, label in labels
+                        if tasks.get(key, {}).get('state') == 'running'), None)
+spinner = '|/-\\'[int(time.time()*10) % 4]
+line = f'VASTGAME | {phase} | {duration(elapsed)} | [{spinner}] '
+percent = None
+if active:
+    key, label, item = active
     total, done = number(item.get('total')), number(item.get('bytes'))
-    if state == 'done':
-        emit(f'  [OK] {label}: {action}')
-    elif state == 'error':
-        emit(f'  [!]  {label}: {action}')
-    elif total and state == 'running':
-        fraction = min(done / total, 1)
-        # Bytes consumed do not mean the downstream command has finished.
+    if total:
         transfer_only = 'streamed_bytes' in item
-        pct = min(100 if transfer_only else 99, int(fraction * 100))
-        filled = min(20 if transfer_only else 19, int(fraction * 20))
-        emit(f'  {label}: {action}  [{"#"*filled}{"-"*(20-filled)}] {pct}%')
-        speed = number(item.get('speed'))
-        eta = item.get('eta')
-        age = time.time() - number(item.get('updated'))
-        detail = f'    {done/1e9:.2f} / {total/1e9:.2f} GB'
+        percent = min(100 if transfer_only else 99, int(done/total*100))
+        line += f'{label} {percent}% | {done/1e9:.2f}/{total/1e9:.2f} GB'
         if transfer_only and done >= total:
-            detail += ' | Transfer complete'
-        elif age > 10:
-            detail += ' | awaiting fresh measurements'
+            line += ' | Transfer complete; finalizing'
+        elif time.time()-number(item.get('updated')) > 10:
+            line += ' | awaiting fresh measurements'
         else:
-            detail += f' | {speed/1e6:.1f} MB/s' if speed else ' | measuring speed'
-            detail += f' | ETA {duration(eta)}' if isinstance(eta, (int, float)) and math.isfinite(eta) and eta >= 0 else ' | ETA calculating'
-        emit(detail)
-        if 'streamed_bytes' in item:
-            emit(f'    Verified parts: {int(number(item.get("verified_parts")))}/{int(number(item.get("total_parts")))}')
-            emit(f'    Extraction input consumed: {number(item["streamed_bytes"])/1e9:.2f} / {total/1e9:.2f} GB')
+            speed, eta = number(item.get('speed')), item.get('eta')
+            line += f' | {speed/1e6:.1f} MB/s' if speed else ' | measuring speed'
+            line += f' ETA {duration(eta)}' if isinstance(eta, (int, float)) and math.isfinite(eta) and eta >= 0 else ' ETA --'
+        if transfer_only:
+            line += f' | Verified {int(number(item.get("verified_parts")))}/{int(number(item.get("total_parts")))}'
     else:
-        marker = '|/-\\'[int(time.time()*2) % 4] if state == 'running' else '.'
-        emit(f'  [{marker}]  {label}: {action}')
-emit('ETA covers remaining transfer; final installation checks may take longer.')
+        line += f'{label}: {item.get("action", "Working")}'
+else:
+    line += 'Waiting for stage progress'
+completed = sum(tasks.get(key, {}).get('state') == 'done' for key, _ in labels)
+line += f' | Ready {completed}/{len(labels)}'
+# Logs record substantive changes, not elapsed time, speed jitter or spinner frames.
+signature = [phase, percent, [(key, tasks.get(key, {}).get('state'), tasks.get(key, {}).get('action')) for key, _ in labels]]
+print(json.dumps(signature, separators=(',', ':')))
+emit(line)
 PY_RENDER
     )" || return 0
-    progress_clear
-    printf '%s\n' "$frame"
-    if [[ -t 1 ]]; then
-        VG_PROGRESS_LINES="$(printf '%s\n' "$frame" | wc -l)"
-    fi
+    key="${frame%%$'\n'*}"
+    frame="${frame#*$'\n'}"
+    progress_line "$frame" "bootstrap:$key"
 }
 
 print_bootstrap_progress_legacy() {
@@ -424,4 +450,3 @@ print_bootstrap_progress_legacy() {
 
     return 0
 }
-

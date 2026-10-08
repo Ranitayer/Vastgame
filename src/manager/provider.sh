@@ -27,7 +27,7 @@ instance_json() {
     local id="$1"
     local out
 
-    out="$(vastai show instance "$id" --raw 2>/dev/null)" ||
+    out="$(timeout 15s vastai show instance "$id" --raw 2>/dev/null)" ||
         return 1
 
     jq -c '
@@ -160,18 +160,64 @@ extract_message() {
     '
 }
 
-show_vast_diagnostics() {
-    local id="$1"
+record_instance_event() {
+    local id="$1" info="$2"
+    python3 "$CLIENT_DIR/failure_report.py" event "$STATEDIR" "$id" \
+        --game "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)" <<<"$info" 2>/dev/null || true
+}
 
+collect_failure_report() {
+    local id="$1" reason="$2" info
+    info="$(instance_json "$id" 2>/dev/null || true)"
+    if ! jq -e --arg id "$id" '(.id|tostring) == $id' >/dev/null 2>&1 <<<"$info"; then
+        info="$(cat "$STATEDIR/reports/$id/instance.json" 2>/dev/null || true)"
+    fi
+    if ! jq -e --arg id "$id" '(.id|tostring) == $id' >/dev/null 2>&1 <<<"$info"; then
+        info="$(jq -n --arg id "$id" '{id:$id}')"
+    fi
+    python3 "$CLIENT_DIR/failure_report.py" failure "$STATEDIR" "$id" --reason "$reason" \
+        --ip "${ip:-}" --game "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)" <<<"$info" ||
+        warn "Failure report collection incomplete; VM retained."
+}
+
+# Probe before guest HTTP exists; a missing domain alone can be a normal initial lookup.
+check_startup_logs() {
+    local id="$1" info="$2" render="$3" now log event latest
+    now="$(date +%s)"
+    if [[ "${VG_LOG_INSTANCE:-}" != "$id" ]]; then
+        VG_LOG_INSTANCE="$id"
+        VG_LOG_CHECKED=0
+    fi
+    (( now - ${VG_LOG_CHECKED:-0} >= 30 )) || return 0
+    VG_LOG_CHECKED="$now"
+    progress_run "$render" timeout 15s vastai logs "$id" --tail 100 || return 0
+    log="$VG_POLL_OUTPUT"
+    printf '%s\n' "$log" | python3 "$CLIENT_DIR/failure_report.py" log "$STATEDIR" "$id" 2>/dev/null || true
+    if grep -Fqi 'GPU error, unable to start instance' <<<"$log"; then
+        latest="$(instance_json "$id" 2>/dev/null || true)"
+        # Logs survive host retries; a currently running guest overrides an old GPU error.
+        if jq -e --arg id "$id" '(.id|tostring) == $id and .actual_status == "running"' >/dev/null 2>&1 <<<"$latest"; then
+            record_instance_event "$id" "$latest"
+            return 0
+        fi
+        destroy_failed_prompt "$id" "Vast reported GPU error, unable to start instance."
+    fi
+    event="$(grep -E '\[VASTGAME\]|^Bootstrap requires xz$' <<<"$log" | tail -n 1 || true)"
+    if [[ "$event" == *'[VASTGAME] ERROR:'* || "$event" == 'Bootstrap requires xz' ]]; then
+        destroy_failed_prompt "$id" "Startup failed before guest networking: $event"
+    fi
+    # Missing domains are normal while Vast creates/retries a guest. Keep waiting.
+}
+
+pause_boot_wait() {
+    local id="$1" reason="$2"
+    progress_clear
     echo
-    bold "Diagnostics"
-
-    vastai show instance "$id" 2>&1 || true
-
-    echo
-    echo "Recent Vast logs:"
-
-    vastai logs "$id" --tail 80 2>&1 || true
+    bold "BOOT WAIT PAUSED — VM failure is not confirmed"
+    collect_failure_report "$id" "Boot wait paused: $reason"
+    warn "Watcher stopped waiting; VM retained and may still be billing."
+    echo "Resume the same VM: vastgame force connect"
+    exit 1
 }
 
 destroy_failed_prompt() {
@@ -185,9 +231,7 @@ destroy_failed_prompt() {
     bold "STARTUP FAILED"
     printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 
-    echo "$reason"
-
-    show_vast_diagnostics "$id"
+    collect_failure_report "$id" "$reason"
 
     echo
     warn "Instance $id may still be billing."
@@ -220,7 +264,6 @@ check_instance_failure() {
     local info
     local actual
     local intended
-    local next
     local msg
     local listing
 
@@ -236,16 +279,14 @@ check_instance_failure() {
         return 0
     fi
 
+    record_instance_event "$id" "$info"
+
     actual="$(
         jq -r '.actual_status // "provisioning"' <<<"$info"
     )"
 
     intended="$(
         jq -r '.intended_status // "-"' <<<"$info"
-    )"
-
-    next="$(
-        jq -r '(.next_state // "-") | tostring' <<<"$info"
     )"
 
     msg="$(extract_message <<<"$info")"
@@ -259,10 +300,10 @@ check_instance_failure() {
                 VG_OFFLINE_INSTANCE="$id"
                 VG_OFFLINE_SINCE="$now"
             elif (( now - VG_OFFLINE_SINCE >= 90 )); then
-                destroy_failed_prompt "$id" "Vast host remained offline for 90 seconds."
+                pause_boot_wait "$id" "Vast status remained offline for 90 seconds; guest availability is unconfirmed."
             fi
             ;;
-        exited|unknown|stopped)
+        exited|stopped)
             destroy_failed_prompt \
                 "$id" \
                 "Vast entered terminal state: $actual"
@@ -270,17 +311,10 @@ check_instance_failure() {
         *) VG_OFFLINE_SINCE=0 ;;
     esac
 
-    if [[ "$intended" == "stopped" ||
-          "$next" == "stopped" ]]; then
-
-        destroy_failed_prompt \
-            "$id" \
-            "Vast is trying to stop the VM during startup."
-    fi
-
-    if [[ -n "$msg" ]] &&
+    # A running guest overrides historical error text; a planned stop alone is not failure.
+    if [[ "$actual" != running && -n "$msg" ]] &&
        grep -Eqi \
-       'does not support VMs|unsupported VM|failed to start|insufficient|unable to create|invalid image' \
+       'GPU error, unable to start instance|does not support VMs|unsupported VM|failed to start|insufficient|unable to create|invalid image' \
        <<<"$msg"
     then
 

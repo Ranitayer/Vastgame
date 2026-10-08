@@ -1,0 +1,26 @@
+name: Publish Vastgame for Windows
+on:
+  push:
+    tags: ['vastgame-v*']
+permissions:
+  contents: write
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build public installer and updater
+        run: |
+          version=${GITHUB_REF_NAME#vastgame-v}
+          python3 packaging/windows/build_update.py --version "$version" --output dist/Vastgame.zip
+      - name: Publish one Windows download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/Vastgame.zip dist/Vastgame.zip.sha256 \
+            --title "Vastgame ${GITHUB_REF_NAME#vastgame-v}" \
+            --notes-file packaging/windows/RELEASE-NOTES.md --latest

@@ -40,6 +40,17 @@ def perfect():
 
 
 class MetricsTests(unittest.TestCase):
+    def test_metrics_log_rotation_keeps_one_previous_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'metrics.jsonl'
+            previous = path.with_name(path.name+'.1')
+            previous.write_text('obsolete')
+            with path.open('wb') as output:
+                output.truncate(16*1024**2)
+            hud.append_metrics(path, {'updated': 1})
+            self.assertEqual(previous.stat().st_size, 16*1024**2)
+            self.assertEqual(json.loads(path.read_text()), {'updated': 1})
+
     def test_client_stats_are_real_stream_not_game_fps(self):
         m = hud.parse_moonlight(STATS)
         self.assertEqual(m['stream_fps'], 89.95)
@@ -107,13 +118,61 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(len(lines),11)
         self.assertTrue(all(line.startswith('#') and line[7]=='|' for line in lines))
         self.assertIn('probe loss','\n'.join(lines))
-        self.assertIn('Encode-only / video packet loss: —','\n'.join(lines))
+        self.assertIn('Game source: MangoHud','\n'.join(lines))
         self.assertIn('RAM','\n'.join(lines))
         self.assertIn('VRAM','\n'.join(lines))
         m=perfect(); m['decode_ms']=20
         quality=hud.assess(m,90)
         decoder=next(line for line in hud.hud_lines(m,quality,90) if '|Decode ' in line)
         self.assertTrue(decoder.startswith('#ff7979|'))
+
+    def test_managed_mango_starts_hidden_logging_for_only_its_launch(self):
+        from unittest.mock import MagicMock, patch
+        with tempfile.TemporaryDirectory() as tmp:
+            unix=Path(tmp)/'unix'; unix.write_text('header\n0 0 0 0 0 0 0 @vastgame-current-123\n0 0 0 0 0 0 0 @vastgame-old-456\n')
+            client=MagicMock(); connected=set()
+            with patch.object(telemetry.socket,'socket',return_value=client):
+                telemetry.start_mango_logging('vastgame-current-',connected,unix)
+                telemetry.start_mango_logging('vastgame-current-',connected,unix)
+            connection=client.__enter__.return_value
+            connection.connect.assert_called_once_with('\0vastgame-current-123')
+            connection.sendall.assert_called_once_with(b':logging=1;')
+
+    def test_partial_csv_rows_never_become_game_fps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'Game.exe_2026.csv'
+            source.write_text('cpu_load,frametime,fps,gpu_power\n20,11,90,150\n20,1,999,999')
+            sample=telemetry.mango_sample(root,'Game.exe',0)
+            self.assertEqual(sample['game_fps'],90)
+            self.assertEqual(sample['gpu_power_w'],150)
+
+    def test_vm_packet_binding_and_bad_numbers_cannot_poison_hud(self):
+        meta=dict(game_id='fixture',session_id='current')
+        vm=dict(meta,updated=100,game_fps=90,frametime_ms=11.1,game_metrics_source='MangoHud')
+        metrics={}
+        self.assertTrue(hud.merge_vm_metrics(metrics,vm,meta,now=101))
+        self.assertEqual(metrics['game_fps'],90)
+        for bad in (dict(vm,session_id='old'),dict(vm,updated=90),dict(vm,updated='bad')):
+            self.assertFalse(hud.merge_vm_metrics({},bad,meta,now=101))
+        bad=dict(vm,game_fps=float('nan'),gpu_pct=-1)
+        metrics={}; hud.merge_vm_metrics(metrics,bad,meta,now=101)
+        self.assertNotIn('game_fps',metrics); self.assertNotIn('gpu_pct',metrics)
+
+    def test_collector_uses_isolated_folders_and_preserves_actual_game_fps(self):
+        from unittest.mock import patch, Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); (root/'session.json').write_text(json.dumps(dict(session_id='session')))
+            with patch.object(telemetry.Path,'home',return_value=root):
+                first=telemetry.Collector('fixture','Game.exe',root)
+                second=telemetry.Collector('fixture','Game.exe',root)
+            self.assertNotEqual(first.folder,second.folder)
+            (first.folder/'Game.exe_2026.csv').write_text('fps,frametime,cpu_load\n45,22.2,20\n')
+            with patch.object(telemetry,'start_mango_logging'), patch.object(telemetry.subprocess,'run',return_value=Mock(stdout='98,1024,24576,65\n')):
+                metrics=first.sample()
+            self.assertEqual(metrics['game_fps'],45)
+            self.assertEqual(metrics['frametime_ms'],22.2)
+            self.assertEqual(metrics['gpu_pct'],98)
+            self.assertEqual(metrics['game_metrics_status'],'live')
 
     def test_game_csv_matches_exe_and_freshness(self):
         with tempfile.TemporaryDirectory() as tmp:

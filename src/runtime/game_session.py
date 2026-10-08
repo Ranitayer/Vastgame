@@ -39,16 +39,20 @@ def validate(m):
     return m
 
 
-def config(m):
+def config(m, telemetry=None):
     validate(m)
     gid = m['id']
     wine, env = wine_config(m)
-    # The Vulkan layer records actual game presents without a second visible HUD.
-    # HOME is shared with the Steam Runtime container; /profiles may not be.
-    performance = str(Path.home() / '.local/state/vastgame/performance' / gid)
-    env.setdefault('MANGOHUD', '1')
-    env.setdefault('MANGOHUD_CONFIG', 'no_display,autostart_log=1,log_interval=1000,log_duration=0,'
-                   'permit_upload=0,output_folder=' + performance)
+    if telemetry is not None:
+        from telemetry import mango_environment
+        managed = mango_environment(telemetry.folder, telemetry.control)
+        # Keep user options such as an FPS cap, but reserve collection/visibility settings.
+        reserved = {'no_display', 'autostart_log', 'log_interval', 'log_duration',
+                    'permit_upload', 'control', 'output_folder'}
+        custom = [option for option in env.get('MANGOHUD_CONFIG', '').split(',')
+                  if option and option.split('=', 1)[0] not in reserved]
+        managed['MANGOHUD_CONFIG'] = ','.join(custom+[managed['MANGOHUD_CONFIG']])
+        env.update(managed)
     return {'game': {'exe': f'/games/{gid}/' + m['game']['executable'],
                      'working_dir': f'/games/{gid}/' + m['game'].get('working_dir', ''),
                      'prefix': f'/prefixes/{gid}',
@@ -73,10 +77,10 @@ def lutris_api():
     return settings, init_lutris, games
 
 
-def register(m, preparing=False):
+def register(m, preparing=False, telemetry=None):
     settings, init_lutris, games = lutris_api()
     init_lutris()
-    cfg = config(m)
+    cfg = config(m, telemetry)
     exe = Path(cfg['game']['exe'])
     # Setup runs cmd.exe while the immutable game package is still downloading.
     # Real launches always require the restored executable and working directory.
@@ -139,9 +143,9 @@ def run():
     launch_lock = None
     try:
         launch_lock = (Path('/profiles') / gid / 'state.lock').open('a')
-        fcntl.flock(launch_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        if (root / 'stopping').exists():
-            raise RuntimeError('Final backup in progress; game launch blocked')
+        from game_state import wait_for_state_lock
+        wait_for_state_lock(launch_lock, timeout=300, mode=fcntl.LOCK_SH, stopping=root/'stopping',
+                            report=lambda message: status('starting', message))
         Path('/shaders/' + gid + '/cache').mkdir(parents=True, exist_ok=True)
         status('starting', 'Registering game in Lutris')
         m = validate(json.loads((Path('/profiles') / gid / 'manifest.json').read_text()))
@@ -149,13 +153,19 @@ def run():
             raise ValueError('Session and manifest IDs differ')
         from prepare_game import require_ready
         require_ready(m)
-        game_id = register(m)
-        cfg = config(m)
         from telemetry import Collector
         try:
-            collector = Collector(gid, m['game']['executable']).start()
+            (root/'performance.json').unlink(missing_ok=True)
+            collector = Collector(gid, m['game']['executable'])
         except Exception as exc:
             print('Performance telemetry unavailable: ' + str(exc), flush=True)
+        game_id = register(m, telemetry=collector)
+        cfg = config(m, collector)
+        if collector is not None:
+            try: collector.start()
+            except Exception as exc:
+                print('Performance telemetry unavailable: ' + str(exc), flush=True)
+                collector.stop.set(); collector = None
         status('starting', 'Launching game through the prepared Lutris environment')
         child = subprocess.Popen(['lutris', '-d', 'lutris:rungameid/' + game_id], stdout=log, stderr=log)
         launch_lock.close(); launch_lock = None
