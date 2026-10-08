@@ -55,11 +55,15 @@ class SessionTests(unittest.TestCase):
         from types import SimpleNamespace
         m=manifest(); m['environment']['MANGOHUD_CONFIG']='fps_limit=90,no_display=0,log_interval=0'
         collector=SimpleNamespace(folder=Path('/home/retro/.local/state/vastgame/performance/fixture/run'), control='vastgame-run-')
-        env=session.config(m,collector)['system']['env']
+        cfg=session.config(m,collector)
+        env=cfg['system']['env']
         self.assertEqual(env['MANGOHUD'],'1')
+        self.assertTrue(cfg['system']['mangohud'])
         self.assertIn('fps_limit=90',env['MANGOHUD_CONFIG'])
-        self.assertIn('no_display=1',env['MANGOHUD_CONFIG'])
+        self.assertIn('alpha=0',env['MANGOHUD_CONFIG'])
+        self.assertIn('background_alpha=0',env['MANGOHUD_CONFIG'])
         self.assertNotIn('no_display=0',env['MANGOHUD_CONFIG'])
+        self.assertNotIn('no_display=1',env['MANGOHUD_CONFIG'])
         self.assertIn('log_interval=500',env['MANGOHUD_CONFIG'])
         self.assertIn('control=vastgame-run-%p',env['MANGOHUD_CONFIG'])
         self.assertIn('permit_upload=0',env['MANGOHUD_CONFIG'])

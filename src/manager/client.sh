@@ -107,21 +107,35 @@ edit_stream_settings() {
         chmod 600 "$path"
     fi
     echo "Stream settings: $path"
-    echo 'Save, then reconnect Moonlight to apply changes.'
+    echo 'Save and close the editor. Reconnect Moonlight to apply changes.'
     if [[ "${VASTGAME_WINDOWS:-0}" == 1 ]]; then
-        vastgame-native edit-stream "$path"
-        return
-    fi
-    if [[ -n "${VISUAL:-${EDITOR:-}}" ]]; then
+        vastgame-native edit-stream "$path" || return 1
+    elif [[ -n "${VISUAL:-${EDITOR:-}}" ]]; then
         defaults="$(python3 -c 'import shlex,sys; print("\n".join(shlex.split(sys.argv[1])))' "${VISUAL:-$EDITOR}")" || die "Invalid editor setting"
         mapfile -t editor <<<"$defaults"
-        "${editor[@]}" "$path"
-        return
+        case "${editor[0]##*/}" in
+            kate|kwrite) editor+=(--block) ;;
+            code) editor+=(--wait) ;;
+        esac
+        "${editor[@]}" "$path" || return 1
+    else
+        local found=0
+        for defaults in kate kwrite gedit mousepad code nano vi; do
+            if command -v "$defaults" >/dev/null 2>&1; then
+                case "$defaults" in
+                    kate|kwrite) "$defaults" --block "$path" ;;
+                    code) "$defaults" --wait "$path" ;;
+                    *) "$defaults" "$path" ;;
+                esac
+                found=1
+                break
+            fi
+        done
+        (( found )) || die "No text editor found. Edit $path manually or set EDITOR"
     fi
-    for defaults in kate kwrite gedit mousepad code nano vi; do
-        if command -v "$defaults" >/dev/null 2>&1; then "$defaults" "$path"; return; fi
-    done
-    die "No text editor found. Edit $path manually or set EDITOR"
+    local saved
+    saved="$(read_stream_settings)" || die "Stream settings were not saved as valid JSON: $path"
+    printf 'Saved stream settings: %s at %s FPS\n' "$(jq -r .resolution <<<"$saved")" "$(jq -r .fps <<<"$saved")"
 }
 
 prepare_performance_hud() {

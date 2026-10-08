@@ -16,7 +16,7 @@ PROJECT = HERE.parents[1]
 FILES = ('update-backend.sh', 'apply_update.py', 'Update-Vastgame.ps1', 'Update-Vastgame.cmd',
          'Check-Updates.ps1', 'Install-Vastgame.ps1', 'Vastgame.cmd', 'run-vastgame.sh',
          'windows-bridge.sh', 'Native-Screen.ps1', 'Native-Ping.ps1', 'stream.json',
-         'Edit-Stream-Settings.cmd', 'Complete-Setup.ps1', 'Prepare-WSL.ps1',
+         'Edit-Stream-Settings.cmd', 'Edit-Stream-Settings.ps1', 'Complete-Setup.ps1', 'Prepare-WSL.ps1',
          'prepare-network.sh', 'install-backend.sh', 'dependencies.json',
          'Collect-Diagnostics.cmd', 'Collect-Diagnostics.ps1', 'WINDOWS-README.txt')
 

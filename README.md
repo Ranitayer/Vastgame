@@ -86,7 +86,8 @@ Run `vastgame streamedit` to open the settings in a Linux editor or Windows
 Notepad. It creates defaults if the file is missing and performs no VM operations.
 Edit `~/.config/vastgame/stream.json` on Linux. Windows uses `stream.json` in the
 installed app folder, normally `%LOCALAPPDATA%\Vastgame`; open the included
-`Edit-Stream-Settings.cmd`. Save before `vastgame start` or `vastgame connect`.
+`Edit-Stream-Settings.cmd`. The editor waits for you to save and close it, then
+Vastgame confirms the saved resolution/FPS. Save before `vastgame start` or `vastgame connect`.
 Disconnect and reconnect Moonlight to apply changes; no new VM is needed.
 
 ```json
@@ -336,12 +337,14 @@ Older Python installations report the requirement and retain the downloaded ZIP.
 
 Fresh VM setup installs MangoHud in the same Lutris container image used for
 preparation and gameplay (including 32-bit support when the repository supplies
-it). At launch, Vastgame enables its Vulkan layer with a hidden overlay and
-starts logging through a per-launch abstract Unix control socket. This avoids
-hidden-overlay/autostart behavior in older MangoHud versions. It does not enable
+it). At launch, Lutris enables MangoHud for the game command. Vastgame makes
+its drawing transparent and starts logging through a per-launch abstract Unix
+control socket. This avoids MangoHud versions where `no_display` also disables
+logging. It does not enable
 DLSS, change resolution, or apply a new FPS cap; existing user caps are retained.
 
-The VM reads fresh, complete CSV samples for the configured executable. Each
+The VM reads fresh, complete CSV samples for the configured executable, including
+MangoHud's `wine-` filename form. Each
 launch gets its own private log directory, so other executables and old sessions
 cannot supply its FPS. MangoHud supplies measured game FPS and frametime, plus
 CPU temperature and GPU power/clocks where supported. VM CPU/RAM and NVIDIA
@@ -382,7 +385,7 @@ The updater verifies download/file checksums, holds lifecycle and catalog locks,
 stages the backend and restores changed files if installation fails.
 
 To publish later changes from this checkout, commit the intended source changes,
-then run `bash scripts/release-windows.sh 1.1.3` with a new version. GitHub builds
+then run `bash scripts/release-windows.sh 1.1.4` with a new version. GitHub builds
 and publishes `Vastgame.zip` automatically from that exact tag. Account bundles,
 dependency downloads and local build workspaces are excluded. Review
 `packaging/windows/RELEASE-NOTES.md` before publishing. No VM is changed by release

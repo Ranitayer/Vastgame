@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 
 NATIVE = ('Native-Screen.ps1', 'Native-Ping.ps1', 'Edit-Stream-Settings.cmd', 'Vastgame.cmd',
+          'Edit-Stream-Settings.ps1',
           'Check-Updates.ps1', 'Update-Vastgame.cmd', 'Update-Vastgame.ps1', 'Install-Vastgame.ps1',
           'Complete-Setup.ps1', 'Prepare-WSL.ps1', 'WINDOWS-README.txt', 'release.json')
 

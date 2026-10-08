@@ -18,13 +18,14 @@ class StreamSettingsTests(unittest.TestCase):
             editor=root/'editor'; editor.write_text('#!/bin/sh\nprintf "%s" "$1"\n'); editor.chmod(0o755)
             code=f'''source "{ROOT}/src/manager/client.sh"
 CFGDIR="$FIXTURE_DIR"
+CLIENT_DIR="{ROOT}/src/client"
 die() {{ echo "$*" >&2; exit 1; }}
 edit_stream_settings
 '''
             result=subprocess.run(['bash','-e','-u','-c',code],env=dict(os.environ,
                 FIXTURE_DIR=str(root),EDITOR=str(editor),VISUAL='',VASTGAME_WINDOWS='0'),capture_output=True,text=True)
-            self.assertEqual(result.returncode,0,result.stderr)
-            self.assertTrue(result.stdout.endswith(str(config)))
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn(str(config),result.stderr)
             self.assertEqual(config.read_text(),'{broken json')
 
     def test_streamedit_creates_defaults_without_cloud_tools(self):
@@ -40,6 +41,24 @@ edit_stream_settings
                 FIXTURE_DIR=str(root),EDITOR='true',VISUAL='',VASTGAME_WINDOWS='0'),capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(json.loads((root/'stream.json').read_text())['resolution'],'native')
+
+    def test_streamedit_waits_and_reads_saved_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); editor=root/'kate'
+            editor.write_text('#!/bin/sh\n[ "$1" = "--block" ] || exit 9\nprintf \'{"resolution":"1920x1200","fps":90}\' > "$2"\n')
+            editor.chmod(0o755)
+            code=f'''source "{ROOT}/src/manager/client.sh"
+CFGDIR="$FIXTURE_DIR"
+CLIENT_DIR="{ROOT}/src/client"
+die() {{ echo "$*" >&2; exit 1; }}
+edit_stream_settings
+read_stream_settings
+'''
+            result=subprocess.run(['bash','-e','-u','-c',code],env=dict(os.environ,
+                FIXTURE_DIR=str(root),EDITOR=str(editor),VISUAL='',VASTGAME_WINDOWS='0'),capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('Saved stream settings: 1920x1200 at 90 FPS',result.stdout)
+            self.assertEqual(json.loads((root/'stream.json').read_text())['resolution'],'1920x1200')
 
     def test_missing_config_follows_native_screen_and_platform_codec(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -47,7 +47,7 @@ def config(m, telemetry=None):
         from telemetry import mango_environment
         managed = mango_environment(telemetry.folder, telemetry.control)
         # Keep user options such as an FPS cap, but reserve collection/visibility settings.
-        reserved = {'no_display', 'autostart_log', 'log_interval', 'log_duration',
+        reserved = {'no_display', 'alpha', 'background_alpha', 'autostart_log', 'log_interval', 'log_duration',
                     'permit_upload', 'control', 'output_folder'}
         custom = [option for option in env.get('MANGOHUD_CONFIG', '').split(',')
                   if option and option.split('=', 1)[0] not in reserved]
@@ -59,7 +59,8 @@ def config(m, telemetry=None):
                      'arch': 'win64' if 'proton' in m.get('runner', {}).get('version', 'ge-proton').lower() else 'auto',
                      'args': shlex.join(m['game'].get('arguments', []))},
             'wine': wine,
-            'system': {'env': env, 'prefix_command': '/usr/bin/python3 /opt/vastgame/game_state.py launch ' + gid}}
+            'system': {'env': env, 'prefix_command': '/usr/bin/python3 /opt/vastgame/game_state.py launch ' + gid,
+                       **({'mangohud': True} if telemetry is not None else {})}}
 
 
 def lutris_api():

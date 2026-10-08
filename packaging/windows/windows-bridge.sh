@@ -42,9 +42,8 @@ case "${0##*/}" in
       exit $?
     fi
     if [[ "${1:-}" == edit-stream ]]; then
-      executable="$(jq -er '.powershell' "$cfg")"
-      executable="$(dirname "$(dirname "$(dirname "$executable")")")/notepad.exe"
-      "$executable" "$(wslpath -w "$2")"
+      root="$(jq -er '.application' "$cfg")"
+      native_powershell -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$root/Edit-Stream-Settings.ps1")" "$(wslpath -w "$2")"
       exit $?
     fi
     root="$(jq -er '.application' "$cfg")"

@@ -49,6 +49,7 @@ class WindowsUpdateTests(unittest.TestCase):
                 names=archive.namelist()
                 self.assertIn('Vastgame/Install-Vastgame.ps1',names)
                 self.assertIn('Vastgame/Check-Updates.ps1',names)
+                self.assertIn('Vastgame/Edit-Stream-Settings.ps1',names)
                 self.assertFalse(any('accounts.tar' in n or 'cyberpunk.json' in n for n in names))
                 release=json.loads(archive.read('Vastgame/release.json'))
                 self.assertEqual(release['version'],'1.1.0')

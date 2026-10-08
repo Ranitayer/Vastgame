@@ -32,6 +32,8 @@ Commands:
   vastgame cleanup
   vastgame update
 
+`vastgame streamedit` and `Edit-Stream-Settings.cmd` edit the installed settings.
+Save and close Notepad; Vastgame confirms the saved resolution and FPS.
 The Windows client uses native Moonlight, AV1 by default, local Alt+Tab and the
 screen's configured resolution/refresh targets. Ctrl+Alt+Shift+S shows Moonlight
 statistics. The native Linux Vastgame HUD is not included on Windows.

@@ -22,7 +22,8 @@ def number(value):
 def mango_sample(folder, executable, started, now=None):
     now = time.time() if now is None else now
     name = Path(executable).name.lower()
-    names = (name + '_', Path(name).stem + '_')
+    stem = Path(name).stem
+    names = (name + '_', stem + '_', 'wine-' + name + '_', 'wine-' + stem + '_')
     files = []
     for p in folder.glob('*.csv'):
         if p.name.lower().startswith(names) and not p.name.endswith('_summary.csv'):
@@ -64,7 +65,8 @@ def mango_sample(folder, executable, started, now=None):
 
 
 def mango_environment(folder, control):
-    return dict(MANGOHUD='1', MANGOHUD_CONFIG='no_display=1,autostart_log=1,log_interval=500,'
+    # no_display blocks logging in affected MangoHud versions; transparent drawing does not.
+    return dict(MANGOHUD='1', MANGOHUD_CONFIG='alpha=0,background_alpha=0,autostart_log=1,log_interval=500,'
                 'log_duration=0,permit_upload=0,gpu_power=1,cpu_temp=1,gpu_core_clock=1,gpu_mem_clock=1,'
                 'control='+control+'%p,output_folder='+str(folder))
 

@@ -186,6 +186,14 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(m['frametime_ms'],11.11)
             self.assertEqual(telemetry.mango_sample(root,'PRAGMATA.exe',now-1,now+10),{})
 
+    def test_wine_named_game_csv_is_game_fps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'wine-SLASHER-Win64-Shipping_2026.csv').write_text('fps,frametime\n70,14.2\n')
+            (root/'wine-EpicWebHelper_2026.csv').write_text('fps,frametime\n999,1\n')
+            sample=telemetry.mango_sample(root,'SLASHER-Win64-Shipping.exe',0)
+            self.assertEqual(sample['game_fps'],70)
+
     def test_invalid_csv_and_old_session_not_fps(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); source=root/'PRAGMATA.exe_2026.csv'
