@@ -93,6 +93,9 @@ class WindowsUpdateTests(unittest.TestCase):
         shortcut=(WINDOWS/'Update-Vastgame.cmd').read_text()
         self.assertIn('if exist "%~dp0ready"',shortcut)
         self.assertIn('Check-Updates.ps1',shortcut)
+        launcher=(WINDOWS/'Vastgame.cmd').read_text()
+        self.assertIn('goto installed',launcher)
+        self.assertIn('call "%LOCALAPPDATA%\\Vastgame\\Vastgame.cmd" %*',launcher)
         setup=(WINDOWS/'Install-Vastgame.ps1').read_text()
         self.assertLess(setup.index("'Update-Vastgame.ps1'"),setup.index('Copy-Item'))
 

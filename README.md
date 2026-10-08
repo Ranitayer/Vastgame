@@ -368,7 +368,7 @@ The updater verifies download/file checksums, holds lifecycle and catalog locks,
 stages the backend and restores changed files if installation fails.
 
 To publish later changes from this checkout, commit the intended source changes,
-then run `bash scripts/release-windows.sh 1.1.1` with a new version. GitHub builds
+then run `bash scripts/release-windows.sh 1.1.2` with a new version. GitHub builds
 and publishes `Vastgame.zip` automatically from that exact tag. Account bundles,
 dependency downloads and local build workspaces are excluded. Review
 `packaging/windows/RELEASE-NOTES.md` before publishing. No VM is changed by release
