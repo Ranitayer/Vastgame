@@ -25,9 +25,6 @@ bootstrap_failure() {
 BOOT_RCLONE_CONFIG_B64="${RCLONE_CONFIG_B64:-}"
 BOOT_TS_AUTHKEY="${TS_AUTHKEY:-}"
 
-CLIENT_TSIP="${VASTGAME_CLIENT_TSIP:-}"
-CLIENT_HOSTNAME="${VASTGAME_CLIENT_HOSTNAME:-ranitayer}"
-MAX_LATENCY_MS="${VASTGAME_MAX_LATENCY_MS:-120}"
 
 CORE_REMOTE="gdrive:VastGaming/system/v1/vastgame-core-v1.tar.zst"
 CORE_SHA_REMOTE="gdrive:VastGaming/system/v1/vastgame-core-v1.tar.zst.sha256"
@@ -110,14 +107,11 @@ elif mode == "download":
         print(line, end="", flush=True)
         try:
             stats = json.loads(line).get("stats", {})
-            transfers = stats.get("transferring") or []
             if stats.get("totalBytes", 0) > 0:
                 write("Downloading", bytes=stats.get("bytes", 0), total=stats["totalBytes"],
                       speed=stats.get("speed", 0), eta=stats.get("eta"))
-            elif transfers:
-                t = transfers[0]
-                write("Downloading", bytes=t.get("bytes", 0), total=t.get("size", 0),
-                      speed=t.get("speedAvg", 0), eta=t.get("eta"))
+            else:
+                write("Downloading; waiting for total size")
         except (ValueError, TypeError, AttributeError):
             pass
 elif mode in ("verify", "stream"):
@@ -243,92 +237,6 @@ pkill -f '^python3 /tmp/vastgame-progress.py serve ' >/dev/null 2>&1 || true
 nohup python3 "$PROGRESS_HELPER" serve "$TSIP" \
   >/var/log/vast-gaming-status-http.log 2>&1 &
 
-# Automatically identify the gaming client on this tailnet.
-# This avoids passing extra --env values through the Vast template.
-if [ -z "$CLIENT_TSIP" ]; then
-  CLIENT_TSIP="$(
-    tailscale status --json 2>/dev/null |
-    jq -r --arg host "$CLIENT_HOSTNAME" '
-      [
-        .Peer[]? |
-        select((.Online // false) == true) |
-        select(
-          (.HostName // "") == $host
-          or
-          ((.DNSName // "") | startswith($host + "."))
-        ) |
-        .TailscaleIPs[]? |
-        select(startswith("100."))
-      ][0] // empty
-    ' || true
-  )"
-fi
-
-[ -n "$CLIENT_TSIP" ] ||
-  fail "Could not find gaming client $CLIENT_HOSTNAME on Tailscale"
-
-echo "[VASTGAME] Client detected: $CLIENT_HOSTNAME ($CLIENT_TSIP)"
-
-# ----------------------------------------------------------------------
-# Latency gate
-#
-# vastgame launcher will inject VASTGAME_CLIENT_TSIP.
-# Nothing large is downloaded until this passes.
-# ----------------------------------------------------------------------
-
-if [ "${VASTGAME_FORCE_ROUTE:-0}" = 1 ]; then
-  echo '[VASTGAME] FORCE MODE: VM latency gate skipped; connection quality may be poor'
-elif [ -n "$CLIENT_TSIP" ]; then
-  command -v ping >/dev/null || fail "ping missing for latency gate"
-
-  progress_phase LATENCY
-  echo "[VASTGAME] Testing latency to client $CLIENT_TSIP"
-
-  BEST_LATENCY=99999
-
-  for attempt in 1 2 3; do
-    # Prime Tailscale so it has a chance to move from DERP to direct.
-    tailscale ping "$CLIENT_TSIP" >/dev/null 2>&1 || true
-    sleep 1
-
-    PING_OUT="$(ping -c 4 -W 2 "$CLIENT_TSIP" 2>&1 || true)"
-
-    AVG="$(
-      printf '%s\n' "$PING_OUT" |
-      awk -F'=' '
-        /rtt min\/avg\/max/ {
-          gsub(/ /,"",$2)
-          split($2,a,"/")
-          printf "%.0f\n", a[2]
-        }
-      '
-    )"
-
-    if [[ "$AVG" =~ ^[0-9]+$ ]]; then
-      echo "[VASTGAME] Latency attempt $attempt: ${AVG} ms"
-
-      if [ "$AVG" -lt "$BEST_LATENCY" ]; then
-        BEST_LATENCY="$AVG"
-      fi
-    fi
-
-    sleep 1
-  done
-
-  [ "$BEST_LATENCY" -lt 99999 ] ||
-    fail "Client unreachable through Tailscale"
-
-  echo "[VASTGAME] Best latency: ${BEST_LATENCY} ms"
-
-  if [ "$BEST_LATENCY" -gt "$MAX_LATENCY_MS" ]; then
-    fail "Latency ${BEST_LATENCY} ms exceeds ${MAX_LATENCY_MS} ms limit"
-  fi
-
-  echo "[VASTGAME] Latency gate passed"
-else
-  echo "[VASTGAME] Latency gate waiting for launcher integration; skipped"
-fi
-
 # ----------------------------------------------------------------------
 # rclone / Google Drive
 # ----------------------------------------------------------------------
@@ -391,6 +299,8 @@ with zipfile.ZipFile('/tmp/vastgame-runtime.zip') as archive:
         Path('/opt/vastgame', name).write_bytes(archive.read(name))
 PY_RUNTIME
 chmod 755 /opt/vastgame/launch-game.sh
+# This runtime blocks new launches and records game activity before starting it.
+touch /var/lib/vast-gaming/status/launch-guard-v1
 python3 -c "import sys; sys.path.insert(0, '/opt/vastgame'); import configure_wolf, game_state" || fail "Runtime Python preflight failed"
 
 # ----------------------------------------------------------------------

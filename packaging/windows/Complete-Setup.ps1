@@ -109,6 +109,8 @@ try {
     if (Test-Path -LiteralPath $keyFile) { Remove-Item -LiteralPath $keyFile -Force }
     Set-Content -LiteralPath (Join-Path $app 'ready') -Value 'ready' -Encoding ASCII
     Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name VastgameSetup -ErrorAction SilentlyContinue
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'Ensure-Desktop.ps1') -Application $app
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop setup incomplete. Run Ensure-Desktop.ps1 to retry.' }
     Write-Host 'Vastgame is ready. Open Vastgame from the Start menu, then use vastgame list or vastgame start GAME.' -ForegroundColor Green
     exit 0
 } catch {

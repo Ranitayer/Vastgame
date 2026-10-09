@@ -44,3 +44,8 @@ No updater rents, stops or destroys VMs. Saves and cloud snapshots are untouched
 The public ZIP is not code-signed. Dependency hashes verify downloads; Tailscale's
 Windows installer signature is also checked. Actual Windows installation and
 streaming still require testing on Windows hardware.
+
+Desktop UI
+The Start-menu Vastgame shortcut opens the native desktop after setup.
+The public ZIP includes vastgame-desktop.exe and installs Microsoft WebView2 if needed.
+CLI commands remain available in a terminal through vastgame. Updates require closing the desktop window; this does not stop your VM.

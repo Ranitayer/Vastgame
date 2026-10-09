@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'runtime'))
 from game_session import validate
 from multipart_restore import package_parts
+from disk_capacity import required_disk_gb
 
 EXCLUDED = re.compile(r'^(setup|install|unins|uninstall|vc_redist|vcredist|dxsetup|'
                       r'crashreport|unitycrashhandler|easyanticheat|launcherprereq)', re.I)
@@ -123,6 +124,65 @@ def create(folder, gid=None, executable=None, dlss=False, progress=None):
     return m
 
 
+def library_summary(catalog, selected_file):
+    try:
+        selected = selected_file.read_text().strip()
+    except FileNotFoundError:
+        selected = ''
+    presentation = catalog.parent/'library.json'
+    metadata = json.loads(presentation.read_text()) if presentation.exists() else {}
+    overrides = metadata.get('games', {}) if isinstance(metadata, dict) else {}
+    if not isinstance(overrides, dict):
+        raise ValueError('Invalid library presentation metadata')
+    games, skipped = [], 0
+    for path in sorted(catalog.glob('*/manifest.json')):
+        try:
+            if path.is_symlink() or path.parent.is_symlink():
+                raise ValueError('Linked manifest')
+            with path.open() as file:
+                raw = file.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise ValueError('Manifest too large')
+            manifest = json.loads(raw)
+            if not isinstance(manifest, dict):
+                raise ValueError('Invalid manifest')
+            gid = manifest.get('id')
+            valid_id(gid)
+            if gid != path.parent.name or not isinstance(manifest.get('name'), str) or not manifest['name'].strip():
+                raise ValueError('Invalid catalog entry')
+            package = manifest.get('package', {})
+            runner = manifest.get('runner', {})
+            compatibility = manifest.get('compatibility', {})
+            if not all(isinstance(value, dict) for value in (package, runner, compatibility)):
+                raise ValueError('Invalid metadata')
+            text = lambda value, limit: value[:limit] if isinstance(value, str) else ''
+            size = lambda key: package.get(key) if type(package.get(key)) is int and package[key] > 0 else None
+            display = overrides.get(gid, {})
+            if not isinstance(display, dict):
+                display = {}
+            appid = display.get('steam_appid', manifest.get('steam_appid'))
+            packaged = bool(size('size') and re.fullmatch(r'[0-9a-fA-F]{64}', str(package.get('sha256', ''))))
+            if not packaged and package.get('parts'):
+                try:
+                    packaged = bool(package_parts(manifest))
+                except (ValueError, TypeError, KeyError):
+                    pass
+            try:
+                disk_gb = required_disk_gb(manifest)
+            except (ValueError, TypeError):
+                disk_gb = None
+            games.append(dict(id=gid, name=text(display.get('name'), 160).strip() or manifest['name'].strip()[:160],
+                steam_appid=appid if type(appid) is int and 0 < appid < 2**32 else None,
+                version=text(manifest.get('version', ''), 40), selected=gid == selected,
+                packaged=packaged,
+                required_disk_gb=disk_gb, download_bytes=size('size'), installed_bytes=size('unpacked_bytes'),
+                runner=text(runner.get('version'), 80) or text(runner.get('type'), 80) or 'Not reported',
+                nvidia_compatibility=compatibility.get('nvidia_ngx') is True))
+        except (OSError, ValueError, TypeError):
+            skipped += 1
+    return dict(games=sorted(games, key=lambda game: (game['name'].casefold(), game['id'])), skipped=skipped)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -132,9 +192,14 @@ if __name__ == '__main__':
     add.add_argument('--catalog', type=Path, required=True)
     verify = commands.add_parser('validate'); verify.add_argument('manifest', type=Path)
     verify.add_argument('--id')
+    listing = commands.add_parser('list')
+    listing.add_argument('--catalog', type=Path, required=True)
+    listing.add_argument('--selected', type=Path, required=True)
     a = parser.parse_args()
     try:
-        if a.command == 'validate':
+        if a.command == 'list':
+            print(json.dumps(library_summary(a.catalog, a.selected)))
+        elif a.command == 'validate':
             m = json.loads(a.manifest.read_text())
             if a.id and m.get('id') != a.id:
                 raise ValueError('Manifest ID differs from its catalog entry')

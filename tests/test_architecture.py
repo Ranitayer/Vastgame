@@ -138,7 +138,7 @@ printf 'CREATE_STAGE_REACHED:%s\n' "$offer_id"
         result=subprocess.run(['jq','--argjson','max','15','--argjson','cap','0.7',
             '--arg','selected_game','fixture','--arg','native_resolution','1920x1080',
             '--argjson','native_fps','60','--slurpfile','hist','/dev/null',
-            '-f',str(ROOT/'src/providers/vast/rank.jq')],input='[]',capture_output=True,text=True)
+            '-L',str(ROOT/'src/providers/vast'),'-f',str(ROOT/'src/providers/vast/rank.jq')],input='[]',capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout),[])
 
@@ -161,12 +161,12 @@ printf 'CREATE_STAGE_REACHED:%s\n' "$offer_id"
         result=subprocess.run(['jq','--argjson','max','30','--argjson','cap','0.7',
             '--arg','selected_game','fixture','--arg','native_resolution','1920x1080',
             '--argjson','native_fps','60','--slurpfile','hist','/dev/null',
-            '-f',str(ROOT/'src/providers/vast/rank.jq')],
+            '-L',str(ROOT/'src/providers/vast'),'-f',str(ROOT/'src/providers/vast/rank.jq')],
             input=json.dumps(offers),capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual({offer['id'] for offer in json.loads(result.stdout)},set(range(1,12)) | {20})
 
-    def test_ranking_rewards_sufficient_affordable_gpu_and_expires_route_failure(self):
+    def test_ranking_rewards_sufficient_affordable_gpu_and_measured_performance(self):
         import time
         base=dict(vms_enabled=True, gpu_ram=12288, reliability=0.99,
                   inet_up=500, inet_down=1000, cpu_cores_effective=8,
@@ -180,13 +180,11 @@ printf 'CREATE_STAGE_REACHED:%s\n' "$offer_id"
                     '--argjson','max','15','--argjson','cap','0.7',
                     '--arg','selected_game','still','--arg','native_resolution','1920x1080',
                     '--argjson','native_fps','60','--slurpfile','hist',f.name,
-                    '-f',str(ROOT/'src/providers/vast/rank.jq')],
+                    '-L',str(ROOT/'src/providers/vast'),'-f',str(ROOT/'src/providers/vast/rank.jq')],
                     input=json.dumps(offers),text=True))
         clean=rank({})
         self.assertEqual(clean[0]['id'],1)
         self.assertEqual(clean[0]['_vg']['basis'],'Estimated')
-        stale=rank({'machine:1':dict(last_result='fail',failures=99,last_test=0)})
-        self.assertEqual(stale,clean)
         measured=rank({'machine:1':{'performance':dict(samples=30,updated=time.time(),
             game_id='still',resolution='1920x1080',target_fps=60,game_fps=20,
             delivery_score=100,game_delivery_score=33)}})

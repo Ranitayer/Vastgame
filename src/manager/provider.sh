@@ -216,7 +216,7 @@ pause_boot_wait() {
     bold "BOOT WAIT PAUSED — VM failure is not confirmed"
     collect_failure_report "$id" "Boot wait paused: $reason"
     warn "Watcher stopped waiting; VM retained and may still be billing."
-    echo "Resume the same VM: vastgame force connect"
+    echo "Resume the same VM: vastgame connect"
     exit 1
 }
 

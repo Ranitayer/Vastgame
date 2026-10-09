@@ -60,40 +60,17 @@ class CoreTemplateTests(unittest.TestCase):
         self.assertEqual(creator.environment_fields(creator.options(data)),data)
         self.assertEqual(creator.environment_fields(json.dumps(data)),data)
 
-    def test_pack_transmits_force_and_client_and_core_setup_within_budget(self):
+    def test_pack_transmits_core_setup_within_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             output=Path(tmp)/'start.sh'
-            env=dict(os.environ,VASTGAME_FORCE_ROUTE='1',VASTGAME_CLIENT_TSIP='100.76.83.60')
-            subprocess.run(['python3',str(ROOT/'src/bootstrap/pack.py'),str(ROOT/'src/bootstrap/start.sh'),str(output)],env=env,check=True)
+            subprocess.run(['python3',str(ROOT/'src/bootstrap/pack.py'),str(ROOT/'src/bootstrap/start.sh'),str(output)],check=True)
             self.assertLess(output.stat().st_size,15360)
             payload=output.read_text().split("VASTGAME_BOOTSTRAP_B85' | xz -dc > \"$tmp\"\n",1)[1].split('\nVASTGAME_BOOTSTRAP_B85',1)[0]
             raw=lzma.decompress(base64.b85decode(payload))
-            self.assertIn(b'export VASTGAME_FORCE_ROUTE=1',raw)
-            self.assertIn(b'export VASTGAME_CLIENT_TSIP=100.76.83.60',raw)
             self.assertIn(b'prepare_core_vm() {',raw)
             self.assertTrue(raw.startswith(b'#!/usr/bin/env bash\nset -Eeuo pipefail\n'))
             self.assertEqual(raw.split(b'LOG=',1)[0].count(b'#!'),1)
             subprocess.run(['bash','-n'],input=raw,check=True)
-
-    def test_force_skips_vm_gate_but_normal_mode_enforces_latency(self):
-        boot=(ROOT/'src/bootstrap/start.sh').read_text()
-        start=boot.index('if [ "${VASTGAME_FORCE_ROUTE:-0}" = 1 ]; then')
-        end=boot.index('\n# ----------------------------------------------------------------------',start)
-        gate=boot[start:end]
-        stubs='''
-set -Eeuo pipefail
-CLIENT_TSIP=100.76.83.60
-MAX_LATENCY_MS=120
-fail() { echo "FAIL:$*"; exit 77; }
-progress_phase() { :; }
-tailscale() { :; }
-sleep() { :; }
-ping() { echo 'rtt min/avg/max/mdev = 145.000/146.000/148.000/1.000 ms'; }
-'''
-        for force,expected in [('0',77),('1',0)]:
-            result=subprocess.run(['bash','-c',stubs+gate],env=dict(os.environ,VASTGAME_FORCE_ROUTE=force),capture_output=True,text=True)
-            self.assertEqual(result.returncode,expected,result.stdout+result.stderr)
-            self.assertIn('exceeds' if force=='0' else 'gate skipped',result.stdout)
 
     def test_failed_dependency_install_stops_before_gpu_or_service_changes(self):
         code='''set -Eeuo pipefail
@@ -165,6 +142,7 @@ mkdir() { :; }
         self.assertEqual(len(installs),1)
         self.assertIn('docker.io',installs[0]); self.assertIn('jq',installs[0])
         self.assertIn('nvidia-container-toolkit=1.20.1-1',installs[0])
+        self.assertIn('DPkg::Lock::Timeout=600',installs[0])
 
     def test_unavailable_pin_fails_clearly_before_install(self):
         result,calls=self.provision(available=False)

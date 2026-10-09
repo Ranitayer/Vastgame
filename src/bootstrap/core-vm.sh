@@ -49,7 +49,7 @@ DRIVER_POLICY
     echo '[VASTGAME] ERROR: Invalid NVIDIA_CONTAINER_TOOLKIT_VERSION'; return 1;
   }
   # Detect dependencies once; installation never upgrades an already prepared VM.
-  for item in curl:curl gpg:gnupg jq:jq zstd:zstd python3:python3 ping:iputils-ping \
+  for item in curl:curl gpg:gnupg jq:jq zstd:zstd python3:python3 \
               lspci:pciutils glxinfo:mesa-utils modprobe:kmod docker:docker.io; do
     command="${item%%:*}"
     command -v "$command" >/dev/null || packages+=("${item#*:}")
@@ -65,7 +65,8 @@ DRIVER_POLICY
     if [ "$bootstrap" = 1 ]; then
       echo '[VASTGAME] Installing repository bootstrap prerequisites'
       timeout 180 apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
-      timeout 300 apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends ca-certificates curl gnupg
+      echo '[VASTGAME] Waiting up to 10 minutes for the package-manager lock; existing updates are left running'
+      timeout 900 apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends ca-certificates curl gnupg
     fi
     curl -fsSL --connect-timeout 15 --max-time 60 https://nvidia.github.io/libnvidia-container/gpgkey |
       gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
@@ -86,7 +87,8 @@ DRIVER_POLICY
         fi
       done
     fi
-    timeout 300 apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends "${packages[@]}"
+    echo '[VASTGAME] Installing Core VM dependencies; waiting up to 10 minutes for the package-manager lock'
+    timeout 900 apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "${packages[@]}"
   fi
   if [ "$toolkit" = 1 ]; then
     nvidia-ctk runtime configure --runtime=docker

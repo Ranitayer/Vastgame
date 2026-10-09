@@ -3,14 +3,25 @@
 # ============================================================
 
 connect_game() {
-    local id
+    local id ip info expected="${2:-}"
 
-    id="$(pick_instance)" ||
-        die "No vastgame instance found."
+    if [[ -n "$expected" ]]; then
+        id="$1"
+        info="$(instance_json "$id")" || die "Cannot verify the selected VM. No connection opened."
+        jq -e --arg id "$id" --arg label "$expected" '(.id | tostring) == $id and .label == $label' >/dev/null <<<"$info" ||
+            die "Selected VM identity changed. No connection opened."
+    else
+        id="$(pick_instance)" || die "No vastgame instance found."
+    fi
 
     printf '%s\n' "$id" > "$INSTANCE_FILE"
 
-    wait_for_gaming "$id"
+    if [[ -n "$expected" ]]; then
+        ip="$(get_vast_ip "$id")" || die "Selected rig is not reachable on Tailscale. VM retained."
+        launch_moonlight "$ip"
+    else
+        wait_for_gaming "$id"
+    fi
 }
 
 show_logs() {
@@ -47,15 +58,18 @@ In-game performance HUD (native Linux Moonlight):
 VM lifecycle:
   vastgame                         Find a host, start a VM, wait for Wolf, open Moonlight
   vastgame start <game-id>          Start a VM and prepare the selected game
-  vastgame force                    Start without route-quality checks
-  vastgame force start <game-id>    Start a selected game without route checks
+    --offer-id <id> [--machine-id <id>] --max-price <$/hr> --yes
+                                   Use this exact eligible offer without interactive prompts
+  vastgame force ...                Compatibility alias for the same command
   vastgame connect                  Resume monitoring an existing Vastgame VM
   vastgame status                   Show current Vast instances
-  vastgame hosts --json             Browse scored NVIDIA VM offers; all regions, no price cap
+  vastgame hosts --json [--game ID] Browse scored NVIDIA VM offers; all regions, no price cap
   vastgame logs                     Show the selected VM bootstrap log
   vastgame logs game                Show game launch status and Lutris/Proton log tail
   vastgame logs report              Show the latest redacted failure report and its folder
   vastgame stop                     Save verified state, then destroy VM
+    --instance-id <id> --label <label>
+                                   Save and stop only the exact identified VM
   vastgame setup                    Save or change the Vast template hash
   vastgame streamedit               Edit stream resolution, FPS, bitrate and Moonlight options
                                     Rig ranking uses these targets and favors affordable performance
@@ -73,7 +87,10 @@ Game catalog:
                                    Resolve EXE ambiguity, enable NGX, verify source, retain staging
     --connections <1-8>             ZIP download connections (default 8; safely falls back to 1)
   vastgame add ... --dlss           Enable NVIDIA compatibility; choose effects in-game
-  vastgame game list                List registered games
+  vastgame details <app-id>         Read cached Steam game information
+  vastgame artwork <app-id> cover|banner
+                                   Fetch cached Steam library artwork
+  vastgame game list [--json]       List registered games; JSON for the desktop library
   vastgame game inspect <id>        Print a game's manifest
   vastgame game validate <id>       Validate its manifest and executable
   vastgame game dlss <id>           Configure NVAPI/NGX compatibility for an existing game
@@ -137,7 +154,11 @@ esac
 case "$command" in
     start|connect|stop|add|select|package|remove|dlss|saves|backup|restore|resume|setup)
         exec 8>"$STATEDIR/lifecycle.lock"
-        flock -n 8 || die "Another Vastgame operation is active. Wait for it to finish."
+        if [[ "$command" == stop && "${1:-}" == --instance-id ]]; then
+            flock -w 90 8 || die "Previous launch has not released the lifecycle lock; VM retained"
+        else
+            flock -n 8 || die "Another Vastgame operation is active. Wait for it to finish."
+        fi
         ;;
 esac
 # Imports may overlap VM startup, but never another catalog writer/removal.
@@ -148,13 +169,50 @@ case "$command" in
         ;;
 esac
 case "$command" in
+    desktop-launch)
+        [[ "$#" == 5 ]] || die "Invalid desktop launch request"
+        exec python3 "$CLIENT_DIR/desktop_launch.py" launch "$@"
+        ;;
+    desktop-watch)
+        [[ "$#" == 1 ]] || die "Invalid desktop progress request"
+        exec python3 "$CLIENT_DIR/desktop_launch.py" watch "$@"
+        ;;
+    desktop-session)
+        [[ "$#" == 0 || ( "$#" == 1 && "$1" =~ ^[a-f0-9]{32}$ ) ]] || die "Invalid launch identity"
+        exec python3 "$CLIENT_DIR/desktop_launch.py" current "$@"
+        ;;
+    desktop-shutdown)
+        [[ "$#" == 1 ]] || die "Invalid desktop shutdown request"
+        exec python3 "$CLIENT_DIR/desktop_launch.py" stop "$@"
+        ;;
+    desktop-connect)
+        [[ "$#" == 1 ]] || die "Invalid desktop connection request"
+        exec python3 "$CLIENT_DIR/desktop_launch.py" connect "$@"
+        ;;
+    quote)
+        [[ "$#" == 3 ]] && valid_game_id "$1" && [[ "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ ]] || die "Usage: vastgame quote GAME OFFER MACHINE"
+        python3 "$CLIENT_DIR/offer_quote.py" "$(game_manifest "$1")" "$2" "$3"
+        ;;
+    details)
+        [[ "$#" == 1 ]] || die "Usage: vastgame details STEAM_APP_ID"
+        python3 "$CLIENT_DIR/game_details.py" "$1"
+        ;;
+    artwork)
+        [[ "$#" == 2 ]] || die "Usage: vastgame artwork STEAM_APP_ID cover|banner"
+        python3 "$CLIENT_DIR/game_artwork.py" "$1" "$2"
+        ;;
     hosts)
-        [[ "$#" == 1 && "$1" == --json ]] || die "Usage: vastgame hosts --json"
+        [[ "${1:-}" == --json && ( "$#" == 1 || ( "$#" == 3 && "${2:-}" == --game ) ) ]] || die "Usage: vastgame hosts --json [--game ID]"
         DISK_GB=60
-        calculate_disk_requirement
+        host_game="$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)"
+        if (( $# == 3 )); then host_game="$3"; fi
+        if [[ -n "$host_game" ]]; then
+            valid_game_id "$host_game" || die "Invalid game ID"
+            DISK_GB="$(python3 "$CLIENT_DIR/disk_capacity.py" "$(game_manifest "$host_game")")" || die "Package this game before filtering Hosts"
+        fi
         query="$(host_offer_query)"
         search_host_offers "$query" |
-            rank_host_offers /dev/stdin 1e99 2147483647 |
+            rank_host_offers /dev/stdin 1e99 2147483647 "$host_game" |
             python3 "$APP_ROOT/src/providers/vast/desktop_hosts.py" "$DISK_GB"
         ;;
     update)
@@ -172,7 +230,7 @@ case "$command" in
         ;;
     add) game_add "$@" ;;
     ingest) game_ingest "$@" ;;
-    list) game_list ;;
+    list) game_list "$@" ;;
     inspect) game_inspect "${1:-}" ;;
     validate) game_validate "${1:-}" ;;
     select) game_select "${1:-}" ;;
@@ -184,9 +242,19 @@ case "$command" in
     resume) state_resume "${1:-}" ;;
     setup) setup_template ;;
     streamedit) edit_stream_settings ;;
-    stop) stop_game ;;
+    stop)
+        if (( $# == 0 )); then stop_game
+        elif [[ "$#" == 4 && "$1" == --instance-id && "$3" == --label && "$2" =~ ^[0-9]+$ && "$4" =~ ^vastgame-[0-9]+$ ]]; then stop_game "$2" "$4"
+        elif [[ "$#" == 6 && "$1" == --instance-id && "$3" == --label && "$5" == --startup-job && "$2" =~ ^[0-9]+$ && "$4" =~ ^vastgame-[0-9]+$ && "$6" =~ ^[a-f0-9]{32}$ ]]; then stop_game "$2" "$4" "$6"
+        else die "Usage: vastgame stop [--instance-id ID --label LABEL]"; fi
+        ;;
     status) vastai show instances ;;
-    connect) read_stream_settings >/dev/null || die "Fix stream.json before connecting"; connect_game ;;
+    connect)
+        read_stream_settings >/dev/null || die "Fix stream.json before connecting"
+        if (( $# == 0 )); then connect_game
+        elif [[ "$#" == 4 && "$1" == --instance-id && "$3" == --label && "$2" =~ ^[0-9]+$ && "$4" =~ ^vastgame-[0-9]+$ ]]; then connect_game "$2" "$4"
+        else die "Usage: vastgame connect [--instance-id ID --label LABEL]"; fi
+        ;;
     logs)
         if [[ "${1:-}" == game ]]; then show_game_log
         elif [[ "${1:-}" == report ]]; then
@@ -200,10 +268,31 @@ case "$command" in
         read_stream_settings >/dev/null || die "Fix stream.json before starting a VM; no rental submitted"
         active="$(all_vastgame_instances)" || die "Cannot check existing VMs; no new VM rented"
         jq -e 'length == 0' >/dev/null <<<"$active" || die "A Vastgame VM already exists. Use connect or stop before starting another."
-        [[ -z "${1:-}" ]] || game_select "$1" >/dev/null
+        requested_game="${1:-}"
+        [[ -z "$requested_game" ]] || { valid_game_id "$requested_game" || die "Invalid game ID"; shift; }
+        VASTGAME_EXPLICIT_OFFER=0
+        VASTGAME_OFFER_ID=""
+        VASTGAME_MACHINE_ID=0
+        VASTGAME_OFFER_PRICE=""
+        confirmed=0
+        while (( $# > 0 )); do
+            case "$1" in
+                --offer-id) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "Invalid offer ID"; VASTGAME_OFFER_ID="$2"; shift 2 ;;
+                --machine-id) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "Invalid machine ID"; VASTGAME_MACHINE_ID="$2"; shift 2 ;;
+                --max-price) [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Invalid price ceiling"; VASTGAME_OFFER_PRICE="$2"; shift 2 ;;
+                --yes) confirmed=1; shift ;;
+                *) die "Unknown start option: $1" ;;
+            esac
+        done
+        if [[ -n "$VASTGAME_OFFER_ID$VASTGAME_OFFER_PRICE" ]] || (( confirmed )); then
+            [[ -n "$requested_game" && -n "$VASTGAME_OFFER_ID" && -n "$VASTGAME_OFFER_PRICE" && "$confirmed" == 1 ]] || die "Exact offer launch requires game ID, --offer-id, --max-price and --yes"
+            VASTGAME_EXPLICIT_OFFER=1
+        fi
+        [[ -z "$requested_game" ]] || game_select "$requested_game" >/dev/null
         # Host selection expects the original start <id> arguments.
-        set -- start "$@"
-        source "$APP_ROOT/src/manager/hosts.sh"
+        set -- start "$requested_game"
+        if (( VASTGAME_EXPLICIT_OFFER )); then source "$APP_ROOT/src/manager/selected_offer.sh"
+        else source "$APP_ROOT/src/manager/hosts.sh"; fi
         source "$APP_ROOT/src/manager/launch.sh"
         ;;
     *) usage; exit 2 ;;

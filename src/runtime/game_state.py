@@ -597,6 +597,9 @@ def wait_for_state_lock(lock, timeout=30, mode=fcntl.LOCK_EX, stopping=None, rep
             raise RuntimeError('Final backup in progress; game launch blocked')
         try:
             fcntl.flock(lock, mode | fcntl.LOCK_NB)
+            if stopping is not None and stopping.exists():
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                raise RuntimeError('Shutdown pending; game launch blocked')
             return
         except BlockingIOError:
             remaining = deadline - time.monotonic()

@@ -21,6 +21,11 @@ the CLI retains its normal budget, regional and hardware-quality filters.
   with `NVIDIA_CONTAINER_TOOLKIT_VERSION`; all four package versions are checked
   before installation. Unavailable versions fail clearly without silently using
   another release. Existing compatible toolkit installations remain.
+- Dependency installation waits up to ten minutes for the package-manager lock,
+  within a fifteen-minute install deadline. Existing automatic updates are left
+  running; no lock files are deleted or package processes killed. Reports retain
+  guest bootstrap console evidence even when Vast reports the VM as running,
+  so a lock timeout is diagnosed as a blocked dependency installation.
 - Validates GPU/daemon availability and virtual input devices before the large
   game restore; repairs injected SSH public-key permissions without disabling
   strict SSH checks. Failed module loading is tolerated only when the actual input
@@ -35,9 +40,8 @@ the CLI retains its normal budget, regional and hardware-quality filters.
   Proton/DX12/prefix preparation, verified state restoration and direct Wolf launch.
 - Keeps per-game state and Wolf pairing separate. No game-specific content is
   embedded in the template.
-- Injects the current client's Tailscale address and the selected force policy
-  into the compressed startup script. Force mode skips both network-quality gates;
-  normal mode retains its limit. Authentication and startup failures still stop.
+- Starts without client-route qualification or VM latency limits. Network quality
+  does not block game preparation. Authentication and genuine startup failures still stop.
 
 The official base is version-tagged; this is not a newly baked custom VM disk.
 Missing dependencies and Proton/runtime downloads can still occur on first boot.
@@ -47,7 +51,7 @@ remains limited to hosts that support VMs.
 ## Test and rollback
 
 ```sh
-vastgame force start still
+vastgame start still
 ```
 
 Choose a rig as usual. An existing Vastgame instance takes precedence and causes
@@ -70,7 +74,7 @@ verifies privacy/image/mode/filter/environment readback before selection, and
 never rents or destroys a VM. Template definitions contain no account secrets.
 Do not publish the account template containing inherited authentication values.
 
-Template creation, readback, force-mode behavior and failure guards have local
+Template creation, readback and failure guards have local
 regression coverage. Fresh headless VM startup/gameplay remains a live acceptance
 test; no VM was launched during setup.
 

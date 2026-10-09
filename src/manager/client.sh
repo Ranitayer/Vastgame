@@ -367,6 +367,7 @@ launch_moonlight() {
         rm -f -- "$STATEDIR/moonlight.log"
     fi
 
+    if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then printf '[VASTGAME_GAME_REQUESTED]\n'; fi
     nohup \
         env "${hud_environment[@]}" "${ml[@]}" stream "${game_options[@]}" "$ip" "$app" \
         >"$moonlight_log" 2>&1 8>&- &
@@ -412,9 +413,9 @@ rank_host_offers() {
     fi
     settings="$(python3 "$CLIENT_DIR/stream_settings.py" resolve "$(stream_settings_file)" "${VASTGAME_WINDOWS:-0}" "$resolution" "$fps")" || return 1
     jq --argjson max "$count" --argjson cap "$cap" --argjson value_cap "$MAX_PRICE" \
-        --arg selected_game "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)" \
+        --arg selected_game "${4-$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)}" \
         --arg native_resolution "$(jq -r .resolution <<< "$settings")" \
         --argjson native_fps "$(jq -r .fps <<< "$settings")" \
         --slurpfile hist <(if jq -e 'type == "object"' "$HISTORY_FILE" >/dev/null 2>&1; then cat "$HISTORY_FILE"; else printf '{}\n'; fi) \
-        -f "$APP_ROOT/src/providers/vast/rank.jq" "$input"
+        -L "$APP_ROOT/src/providers/vast" -f "$APP_ROOT/src/providers/vast/rank.jq" "$input"
 }

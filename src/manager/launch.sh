@@ -8,7 +8,8 @@
 bash -n "$BOOTSTRAP_FILE" ||
     die "Bootstrap v2 syntax validation failed."
 
-label="vastgame-$(date +%s%N)"
+label="${VASTGAME_LAUNCH_LABEL:-vastgame-$(date +%s%N)}"
+[[ "$label" =~ ^vastgame-[0-9]+$ ]] || die "Invalid unique launch label"
 
 
 echo
@@ -25,9 +26,6 @@ fi
 packed_onstart="$STATEDIR/vastgame-onstart-packed.sh"
 publish_runtime
 export RUNTIME_SHA
-export VASTGAME_FORCE_ROUTE
-VASTGAME_CLIENT_TSIP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
-export VASTGAME_CLIENT_TSIP
 
 VASTGAME_BOOTSTRAP_CONFIG="$BOOTSTRAP_CONFIG" python3 "$APP_ROOT/src/bootstrap/pack.py" "$BOOTSTRAP_FILE" "$packed_onstart" "$label" "$(jq -r ".[$idx].machine_id // empty" "$sorted")" "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)"
 
@@ -59,6 +57,7 @@ if (( packed_bytes > 15360 )); then
         "Packed bootstrap is still too large (${packed_bytes} bytes)."
 fi
 
+if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then printf '[VASTGAME_CREATE_REQUESTED]\n'; fi
 set +e
 
 create_out="$(
@@ -92,11 +91,9 @@ if grep -Eqi \
     'unavailable|not available|already rented|not rentable|offer.*not found' \
     <<<"$create_out"
 then
+    (( VASTGAME_EXPLICIT_OFFER == 0 )) || die "Selected offer became unavailable; refresh Hosts and choose again. No other rig was rented."
     warn "Selected offer became unavailable during creation."
     echo "Refreshing ranked offers..."
-    if (( VASTGAME_FORCE_ROUTE == 1 )); then
-        exec "$0" force
-    fi
     exec "$0"
 fi
 
@@ -108,7 +105,7 @@ elif (( create_rc != 0 )) ||
        'Failed with error|error [0-9]{3}/|Invalid args:' \
        <<<"$create_out"
 then
-    die "Vast API rejected the instance creation request."
+    warn "Create failed or its response was lost; checking the exact launch label before deciding."
 fi
 
 # Vast create output is not trusted for contract identification.
@@ -124,7 +121,7 @@ if [[ -z "$instance_id" ]]; then
     for attempt in {1..10}; do
 
         instances="$(
-            vastai show instances --raw 2>/dev/null ||
+            timeout 15s vastai show instances --raw 2>/dev/null ||
             true
         )"
 
@@ -190,7 +187,10 @@ if [[ -z "$instance_id" ]]; then
         echo "Create response: <EMPTY>"
     fi
 
-    die "Vast did not create a contract. Not retrying automatically."
+    if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then
+        printf '[VASTGAME_ERROR]%s\n' '{"code":"CREATION_UNCONFIRMED","message":"Rental result unknown. Refresh session status; do not rent a replacement."}'
+    fi
+    die "Rental result unknown. Check Vastgame status before retrying; not creating a replacement."
 fi
 
 printf '%s\n' "$instance_id" > "$INSTANCE_FILE"
@@ -206,6 +206,9 @@ trap '
 ' INT
 
 ok "Instance created: $instance_id"
+if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then
+    printf '[VASTGAME_DESKTOP]%s\n' "$(jq -cn --arg id "$instance_id" --arg label "$label" '{instance_id:$id,label:$label}')"
+fi
 
 # ============================================================
 # WAIT FOR VAST

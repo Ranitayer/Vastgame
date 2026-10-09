@@ -88,11 +88,13 @@ try {
     New-Item -ItemType Directory -Force -Path $menu | Out-Null
     foreach ($name in @('Vastgame','Update Vastgame')) {
         $shortcut = $shell.CreateShortcut((Join-Path $menu ($name+'.lnk')))
-        $shortcut.TargetPath = Join-Path $app $(if ($name -eq 'Vastgame') { 'Vastgame.cmd' } else { 'Update-Vastgame.cmd' })
+        $shortcut.TargetPath = Join-Path $app $(if ($name -eq 'Vastgame') { 'vastgame-desktop.exe' } else { 'Update-Vastgame.cmd' })
         $shortcut.WorkingDirectory = $app
         $shortcut.Save()
     }
     Remove-Item -LiteralPath $assets -Recurse -Force
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'Ensure-Desktop.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop setup incomplete. Run Ensure-Desktop.ps1 to retry.' }
     Write-Host 'Vastgame installed. Open Vastgame from Start. Future updates: vastgame update' -ForegroundColor Green
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red

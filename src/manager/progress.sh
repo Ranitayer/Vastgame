@@ -192,6 +192,12 @@ print_bootstrap_progress() {
         fi
         return 0
     fi
+    if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then
+        local structured
+        if structured="$(python3 "$CLIENT_DIR/startup_progress.py" <<<"$payload")"; then
+            printf '[VASTGAME_PROGRESS]%s\n' "$structured"
+        fi
+    fi
     VG_STRUCTURED_PROGRESS=1
     VG_RESTORE_METRICS="$(jq -c '.tasks.game // {}' <<<"$payload")"
     reason="$(jq -r '.tasks.error.action // empty' <<<"$payload")"
@@ -328,24 +334,6 @@ print_bootstrap_progress_legacy() {
 
         BOOT)
             echo "  VM: starting base system and Tailscale"
-            ;;
-
-        LATENCY)
-            echo "  Network: validating Moonlight latency"
-
-            line="$(
-                tr '
-' '
-' <<<"$log" |
-                    grep -E \
-                        'Latency attempt|Best latency|Latency gate passed' |
-                    tail -n1 ||
-                true
-            )"
-
-            [[ -n "$line" ]] &&
-                printf '    %s
-' "$line"
             ;;
 
         CORE)

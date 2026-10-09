@@ -160,7 +160,7 @@ docker logs --tail 3000 wolf 2>&1
     write(folder/'guest-unavailable.txt', 'Guest logs unavailable: no identity-verified SSH endpoint responded.\n')
 
 
-def diagnose(reason, provider, guest_log, info=None):
+def diagnose(reason, provider, guest_log, info=None, startup_log=''):
     info = info or {}
     status = '\n'.join(str(info[key]) for key in ('status_msg', 'status_message', 'error_msg', 'error', 'message') if info.get(key))
     if info.get('actual_status') != 'running' and re.search(r'GPU error, unable to start instance', status, re.I):
@@ -170,12 +170,14 @@ def diagnose(reason, provider, guest_log, info=None):
     # Historical provisioning messages cannot diagnose a later client/guest failure.
     if info.get('actual_status') == 'running':
         provider = ''
-    text = reason+'\n'+provider+'\n'+guest_log
+    text = reason+'\n'+provider+'\n'+guest_log+'\n'+startup_log
     if reason.startswith('Boot wait paused:'):
         return dict(category='waiting', stage='Boot watcher paused',
                     cause='The local waiting budget expired or status was unavailable. VM failure is not confirmed; reconnect can resume.',
                     evidence=reason)
     rules = [
+        ('apt_lock', r'E: (?:Unable to acquire[^\n]*lock|Could not get lock|Unable to lock directory)[^\n]*',
+         'Dependency installation blocked', 'Vastgame could not acquire the package-manager lock before its waiting budget expired. Another package-manager process was using it.'),
         ('provider_gpu', r'GPU error, unable to start instance', 'Vast GPU preparation failed',
          'Vast explicitly reported a GPU preparation error. The underlying passthrough/driver reason is not exposed.'),
         ('driver_mismatch', r'(?:Failed to initialize NVML: Driver/library version mismatch|NVRM: API mismatch)',
@@ -188,6 +190,8 @@ def diagnose(reason, provider, guest_log, info=None):
          'Local Moonlight libraries', 'The local Moonlight process could not load compatible libraries; VM failure is not established.'),
     ]
     for category, pattern, stage, cause in rules:
+        if info.get('actual_status') == 'running' and category in ('provider_gpu', 'provider_domain'):
+            continue
         match = re.search(pattern, text, re.I)
         if match: return dict(category=category, stage=stage, cause=cause, evidence=match.group(0))
     if 'did not reach running' in reason:
@@ -236,7 +240,7 @@ def failure(state, folder, info, reason, ip=''):
     client_text = '\n'.join(path.read_text() for path in folder.iterdir()
                             if path.name in ('moonlight.log', 'client-startup.log'))
     startup = (folder/'vast-startup.log').read_text() if (folder/'vast-startup.log').exists() else ''
-    result = diagnose(reason, provider+'\n'+daemon+'\n'+startup, guest_text+'\n'+client_text, info)
+    result = diagnose(reason, provider+'\n'+daemon, guest_text+'\n'+client_text, info, startup)
     evidence_sources = ['instance.json', 'vast-startup.log', 'vast.log', 'vast-daemon.log', 'guest.log',
                         'http-bootstrap.log', 'http-game.log', 'moonlight.log', 'client-startup.log']
     result['evidence_files'] = [name for name in evidence_sources if (folder/name).exists()

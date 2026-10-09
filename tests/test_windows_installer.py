@@ -1,6 +1,7 @@
 from support import cli_source
 import importlib.util
 import json
+import hashlib
 import io
 import tarfile
 import os
@@ -20,7 +21,23 @@ update_spec=importlib.util.spec_from_file_location('windows_update',WINDOWS/'bui
 updater=importlib.util.module_from_spec(update_spec); update_spec.loader.exec_module(updater)
 
 
+def desktop_fixture(root, commit='a'*40):
+    executable = root/'vastgame-desktop.exe'
+    content = bytearray(80)
+    content[:2] = b'MZ'; content[60:64] = (64).to_bytes(4, 'little'); content[64:70] = b'PE\0\0\x64\x86'
+    executable.write_bytes(content)
+    (root/'desktop-build.json').write_text(json.dumps(dict(source_commit=commit, sha256=hashlib.sha256(content).hexdigest())))
+    return executable
+
+
 class WindowsUpdateTests(unittest.TestCase):
+    def test_packaging_rejects_desktop_from_a_different_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = desktop_fixture(root, 'b'*40)
+            with self.assertRaisesRegex(ValueError, 'source do not match'):
+                updater.build(root/'release.zip', '1.1.0', commit='a'*40, desktop=executable)
+
     def test_checksum_is_read_as_text_and_still_verified(self):
         source = (WINDOWS/'Check-Updates.ps1').read_text()
         self.assertNotIn('.Content.Trim()', source)
@@ -52,10 +69,12 @@ class WindowsUpdateTests(unittest.TestCase):
     def test_public_package_needs_no_local_game_or_accounts(self):
         with tempfile.TemporaryDirectory() as tmp:
             output=Path(tmp)/'Vastgame.zip'
-            updater.build(output,'1.1.0',commit='a'*40)
+            updater.build(output,'1.1.0',commit='a'*40,desktop=desktop_fixture(output.parent))
             with zipfile.ZipFile(output) as archive:
                 names=archive.namelist()
                 self.assertIn('Vastgame/Install-Vastgame.ps1',names)
+                self.assertIn('Vastgame/vastgame-desktop.exe',names)
+                self.assertIn('Vastgame/Ensure-Desktop.ps1',names)
                 self.assertIn('Vastgame/Check-Updates.ps1',names)
                 self.assertIn('Vastgame/Edit-Stream-Settings.ps1',names)
                 self.assertFalse(any('accounts.tar' in n or 'cyberpunk.json' in n for n in names))
@@ -81,7 +100,7 @@ class WindowsUpdateTests(unittest.TestCase):
             backend.write_text('previous backend')
             (app/'stream.json').write_text('{"fps":90}')
             ts=root/'tailscale';ts.touch();ps=root/'powershell';ps.touch()
-            output=root/'Vastgame.zip';updater.build(output,'1.1.0',commit='a'*40)
+            output=root/'Vastgame.zip';updater.build(output,'1.1.0',commit='a'*40,desktop=desktop_fixture(output.parent))
             with zipfile.ZipFile(output) as archive: archive.extractall(bundle)
             original_replace=module.replace
             def failing(path,content,mode=0o600):

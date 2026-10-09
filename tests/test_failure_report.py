@@ -11,6 +11,24 @@ spec.loader.exec_module(report)
 
 
 class FailureReportTests(unittest.TestCase):
+    def test_running_vm_preserves_guest_startup_package_lock_evidence(self):
+        evidence = 'E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?'
+        value = report.diagnose('Bootstrap failed', 'GPU error, unable to start instance', '',
+                                dict(actual_status='running'), evidence)
+        self.assertEqual(value['category'], 'apt_lock')
+        self.assertEqual(value['evidence'], evidence)
+        self.assertIn('package-manager lock', value['cause'])
+
+    def test_waiting_for_a_package_lock_alone_does_not_claim_failure(self):
+        value = report.diagnose('Bootstrap failed for an unknown reason', '', '',
+                                dict(actual_status='running'), 'Waiting for cache lock: held by unattended-upgr')
+        self.assertEqual(value['category'], 'unknown')
+
+    def test_guest_console_does_not_revive_old_provider_errors_after_boot(self):
+        value = report.diagnose('Client failed', '', 'symbol lookup error: Qt',
+                                dict(actual_status='running'), 'GPU error, unable to start instance')
+        self.assertEqual(value['category'], 'client_libraries')
+
     def test_redaction_preserves_json_and_removes_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'report.json'

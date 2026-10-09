@@ -1,3 +1,4 @@
+include "eligibility";
 # --------------------------------------------------------
     # Absolute GPU gaming score: 0..40
     #
@@ -235,7 +236,7 @@
     ;
 
     # --------------------------------------------------------
-    # Learned history: recent provider failures -30..-18; route -12..+8
+    # Learned history: recent provider failures -30..-18
     # machine_id is preferred over country guesses.
     # --------------------------------------------------------
 
@@ -250,32 +251,6 @@
         ([$x.provisioning_failures[]? | select(.category == "provider_gpu" and (now - .time) < 604800)] | length) as $boot_failures |
         if $boot_failures >= 2 then -30
         elif $boot_failures == 1 then -18
-        elif ($x | length) == 0 or ($x.last_test // 0) < (now - 604800) then 0
-
-        elif (($x.last_result // "") == "fail")
-        then -12
-
-        elif
-            (($x.last_result // "") == "pass")
-            and (($x.avg_rtt_ms // 999) <= 45)
-            and (($x.jitter_ms // 999) <= 5)
-            and (($x.loss_pct // 100) <= 0.2)
-        then 8
-
-        elif
-            (($x.last_result // "") == "pass")
-            and (($x.avg_rtt_ms // 999) <= 60)
-            and (($x.jitter_ms // 999) <= 8)
-            and (($x.loss_pct // 100) <= 0.5)
-        then 6
-
-        elif
-            (($x.last_result // "") == "pass")
-            and (($x.avg_rtt_ms // 999) <= 80)
-            and (($x.jitter_ms // 999) <= 15)
-            and (($x.loss_pct // 100) <= 1)
-        then 3
-
         else 0
         end
     ;
@@ -313,31 +288,7 @@
 
     |
 
-    map(
-        select(
-            (.dph_total // 999) <= $cap
-            and
-            (.vms_enabled // false) == true
-            and
-            (.cpu_cores_effective // 0) >= 4
-            and
-            (.gpu_ram // 0) >= 6144
-        )
-    )
-
-    |
-
-    # Keep every NVIDIA family, including workstation/datacenter models.
-    # Older responses may omit gpu_arch; recognize their NVIDIA model names.
-    map(select(
-        if (.gpu_arch // "") != "" then
-            (.gpu_arch | ascii_downcase) == "nvidia"
-        else
-            (.gpu_name // "") | test(
-                "NVIDIA|GeForce|RTX|GTX|Quadro|Tesla|Titan|^[ABHKLPTV][0-9]+([ _-]|$)"; "i"
-            )
-        end
-    ))
+    map(select((.dph_total // 999) <= $cap and compatibility_error == null))
 
     |
 

@@ -2,22 +2,80 @@ name: Publish Vastgame for Windows
 on:
   push:
     tags: ['vastgame-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version for a build-only Windows artifact
+        required: true
+        default: '0.1.0'
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: windows-release
   cancel-in-progress: false
 jobs:
-  release:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+  desktop:
+    runs-on: windows-2025
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build public installer and updater
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+      - name: Build native desktop from this release source
+        shell: pwsh
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
         run: |
-          version=${GITHUB_REF_NAME#vastgame-v}
-          python3 packaging/windows/build_update.py --version "$version" --output dist/Vastgame.zip
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME -replace '^vastgame-v','' } else { $env:MANUAL_VERSION }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version' }
+          npm install --global pnpm@11.25.0
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install the pinned build tool' }
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare Rust' }
+          Set-Location desktop
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install locked build dependencies' }
+          @{version=$version} | ConvertTo-Json | Set-Content version.override.json -Encoding utf8NoBOM
+          pnpm tauri build --no-bundle --config (Resolve-Path version.override.json).Path
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows build failed' }
+          $binary = 'src-tauri/target/release/vastgame-desktop.exe'
+          @{source_commit=$env:GITHUB_SHA; sha256=(Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json | Set-Content 'src-tauri/target/release/desktop-build.json' -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-desktop
+          path: |
+            desktop/src-tauri/target/release/vastgame-desktop.exe
+            desktop/src-tauri/target/release/desktop-build.json
+          if-no-files-found: error
+  release:
+    needs: desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-desktop
+          path: dist/desktop
+          digest-mismatch: error
+      - name: Package matching desktop and backend
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version=${GITHUB_REF_NAME#vastgame-v}; else version=$MANUAL_VERSION; fi
+          python3 packaging/windows/build_update.py --version "$version" --desktop dist/desktop/vastgame-desktop.exe --output dist/Vastgame.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-installer
+          path: |
+            dist/Vastgame.zip
+            dist/Vastgame.zip.sha256
+          if-no-files-found: error
       - name: Publish one Windows download
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

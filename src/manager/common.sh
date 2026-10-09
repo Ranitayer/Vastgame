@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Manual route-gate override:
-#   vastgame force
-#   vastgame force connect
-VASTGAME_FORCE_ROUTE=0
-
-if [[ "${1:-}" == "force" ]]; then
-    VASTGAME_FORCE_ROUTE=1
-    shift
-fi
+# Preserve the old force spelling as an alias; all launches use the same checks.
+if [[ "${1:-}" == "force" ]]; then shift; fi
 
 MAX_PRICE="0.70"
 MAX_RESULTS=15
@@ -19,10 +12,6 @@ STATUS_PORT=48199
 VAST_START_TIMEOUT=900
 TAILSCALE_TIMEOUT=1200
 WOLF_TIMEOUT=10800
-
-LOCAL_MAX_RTT_MS=120
-LOCAL_MAX_LOSS_PCT=1
-LOCAL_MAX_JITTER_MS=15
 
 CFGDIR="${XDG_CONFIG_HOME:-$HOME/.config}/vastgame"
 STATEDIR="${XDG_STATE_HOME:-$HOME/.local/state}/vastgame"
@@ -69,7 +58,7 @@ elapsed() {
 }
 
 check_dependencies() {
-for c in flock vastai jq column curl tailscale ssh timeout sed grep tr date python3 ping awk cut mktemp wc; do
+for c in flock vastai jq column curl tailscale ssh timeout sed grep tr date python3 awk cut mktemp wc; do
     command -v "$c" >/dev/null 2>&1 ||
         die "Missing command: $c"
 done

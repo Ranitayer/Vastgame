@@ -99,14 +99,40 @@ safe_backup() { remote_state backup "$1" "" --final; }
 # STOP
 # ============================================================
 
+# Only exact desktop-owned startup jobs may use the no-game shutdown path.
+startup_shutdown_state() {
+    local id="$1" info="$2" label="$3" job="$4" record gid endpoint host port
+    [[ "$job" =~ ^[a-f0-9]{32}$ ]] || return 1
+    record="$STATEDIR/desktop/$job/job.json"
+    jq -e --arg id "$id" --arg label "$label" --arg job "$job" '.job == $job and .instance_id == $id and .label == $label' "$record" >/dev/null || return 1
+    # Current provider status and a client watcher cannot prove lifetime activity.
+    # Only the verified guest's frozen launch guard may authorize skipping backup.
+    gid="$(jq -r '.game' "$record")"
+    valid_game_id "$gid" || return 1
+    local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
+    endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
+    host="${endpoint%%$'\t'*}"; port="${endpoint#*$'\t'}"
+    timeout 15 ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
+        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" -p "$port" "root@$host" \
+        "python3 - $label $gid" < "$RUNTIME_DIR/shutdown_gate.py"
+}
+
 stop_game() {
     local id
-    id="$(pick_instance)" || {
-        echo "No vastgame instances found."
-        return 0
-    }
+    if [[ -n "${1:-}" ]]; then
+        id="$1"
+        local info
+        info="$(instance_json "$id")" || { warn "Cannot verify exact VM; no shutdown performed"; return 1; }
+        jq -e --arg id "$id" --arg label "$2" '(.id|tostring) == $id and .label == $label' >/dev/null <<<"$info" || { warn "VM identity differs; no shutdown performed"; return 1; }
+    else
+        id="$(pick_instance)" || { echo "No vastgame instances found."; return 0; }
+    fi
 
-    if safe_backup "$id"; then
+    local startup_state="unknown"
+    if [[ -n "${3:-}" ]]; then startup_state="$(startup_shutdown_state "$id" "$info" "$2" "$3" || true)"; fi
+    if [[ "$startup_state" == unstarted ]]; then
+        ok "Game never started; skipping backup"
+    elif { echo "Backing up saves..."; safe_backup "$id"; }; then
 
         ok "Final Google Drive state backup complete"
 

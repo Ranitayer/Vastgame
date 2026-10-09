@@ -51,15 +51,6 @@ wait_for_gaming() {
     progress_clear
     ok "Tailscale online: $ip"
 
-    if ! qualify_local_route "$id" "$ip"; then
-        echo
-        warn "Host failed local Moonlight route requirements."
-        warn "Instance $id was retained to protect any existing saves; it may still be billing."
-        collect_failure_report "$id" "Moonlight route qualification failed"
-        die "Route check failed. Retry with vastgame connect, or save and stop with vastgame stop."
-
-    fi
-
     echo
     bold "Stage 3/3 — Optimized restore + Wolf"
 
@@ -68,6 +59,7 @@ wait_for_gaming() {
     VG_TAILSCALE_WAIT_PRINTED=0
     local last_health=0 interval=0.5
     [[ -t 1 ]] || interval=15
+    [[ "${VASTGAME_DESKTOP:-0}" != 1 ]] || interval=2
     VG_STRUCTURED_PROGRESS=0
 
     while true; do

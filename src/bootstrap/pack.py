@@ -5,7 +5,6 @@ import sys
 import shlex
 import os
 import json
-import ipaddress
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
@@ -16,15 +15,8 @@ configuration = Path(os.environ.get("VASTGAME_BOOTSTRAP_CONFIG", ""))
 settings = json.loads(configuration.read_text()) if configuration.is_file() else {}
 if not isinstance(settings, dict) or set(settings) - {"TS_AUTHKEY", "RCLONE_CONFIG_B64"} or any(not isinstance(v, str) for v in settings.values()):
     raise ValueError("Invalid private bootstrap configuration")
-force = os.environ.get('VASTGAME_FORCE_ROUTE', '0')
-if force not in ('0', '1'):
-    raise ValueError('Invalid force-route policy')
-client = os.environ.get('VASTGAME_CLIENT_TSIP', '')
-if client and ipaddress.ip_address(client) not in ipaddress.ip_network('100.64.0.0/10'):
-    raise ValueError('Invalid client Tailscale address')
 prefix = '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
 prefix += "".join(f"export {key}={shlex.quote(value)}\n" for key, value in settings.items())
-prefix += f'export VASTGAME_FORCE_ROUTE={force}\nexport VASTGAME_CLIENT_TSIP={shlex.quote(client)}\n'
 prefix += '\n'.join(src.with_name('core-vm.sh').read_text().splitlines()[1:]) + '\n'
 raw = (prefix + "\n".join(line for line in src.read_text().replace("__VASTGAME_RUNTIME_SHA__", os.environ.get("RUNTIME_SHA", "")).splitlines()[2:]
                  if not line.lstrip().startswith("#") or line.startswith("#!")) + "\n").encode()

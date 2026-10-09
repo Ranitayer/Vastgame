@@ -8,6 +8,31 @@ import unittest
 
 
 class EndpointTests(unittest.TestCase):
+    def test_loading_provider_and_no_local_request_cannot_skip_backup(self):
+        root = Path(__file__).resolve().parents[1]
+        code = '''
+source "$PROJECT/src/manager/persistence.sh"
+instance_json() { echo '{"id":123,"label":"vastgame-123","actual_status":"loading"}'; }
+verified_state_endpoint() { return 1; }
+valid_game_id() { [[ "$1" == fixture ]]; }
+safe_backup() { echo BACKUP_REQUIRED; return 1; }
+destroy_verified() { echo MUST_NOT_DESTROY; return 99; }
+warn() { echo "$*" >&2; }
+ok() { echo "$*"; }
+die() { echo "$*" >&2; return 1; }
+stop_game 123 vastgame-123 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)/'desktop'/('a'*32); folder.mkdir(parents=True)
+            (folder/'job.json').write_text(json.dumps(dict(job='a'*32, instance_id='123', label='vastgame-123', game='fixture', game_requested=False)))
+            result = subprocess.run(['bash', '-Eeuo', 'pipefail', '-c', code],
+                env=dict(os.environ, PROJECT=str(root), STATEDIR=temporary, RUNTIME_DIR=str(root/'src/runtime')),
+                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('BACKUP_REQUIRED', result.stdout)
+        self.assertNotIn('MUST_NOT_DESTROY', result.stdout)
+        self.assertIn('No destroy request sent', result.stderr)
+
     def test_backup_uses_guest_manifest_and_isolated_helper_without_local_manifest(self):
         root=Path(__file__).resolve().parents[1]
         code='''

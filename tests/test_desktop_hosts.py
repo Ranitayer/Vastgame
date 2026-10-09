@@ -34,7 +34,7 @@ class DesktopHosts(unittest.TestCase):
                 '--argjson', 'cap', str(cap), '--argjson', 'value_cap', '0.7',
                 '--arg', 'selected_game', 'fixture', '--arg', 'native_resolution', '1920x1080',
                 '--argjson', 'native_fps', '60', '--slurpfile', 'hist', '/dev/null',
-                '-f', str(ROOT / 'src/providers/vast/rank.jq')],
+                '-L', str(ROOT / 'src/providers/vast'), '-f', str(ROOT / 'src/providers/vast/rank.jq')],
                 input=json.dumps(offers), text=True, capture_output=True, check=True)
             return {offer['id']: offer['_vg']['score'] for offer in json.loads(result.stdout)}
         launch, browse = ranked(0.7), ranked(1e99)

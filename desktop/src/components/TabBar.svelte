@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from './Button.svelte';
   import { tabs, type TabId } from '../navigation';
 
   let { active = $bindable('home') }: { active?: TabId } = $props();
@@ -21,12 +22,12 @@
 
 <div class="tabs" role="tablist" aria-label="Main navigation" aria-orientation="horizontal">
   {#each tabs as tab, index (tab.id)}
-    <button
+    <Button variant="tab"
       id={`tab-${tab.id}`}
       role="tab"
       aria-label={tab.label}
       title={tab.label}
-      class:selected={active === tab.id}
+      selected={active === tab.id}
       aria-selected={active === tab.id}
       aria-controls={`panel-${tab.id}`}
       tabindex={active === tab.id ? 0 : -1}
@@ -34,8 +35,8 @@
       onkeydown={(event) => navigate(event, index)}
     >
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d={tab.icon} /></svg>
-      <span>{tab.label}</span>
-    </button>
+      <span class="label">{tab.label}</span>
+    </Button>
   {/each}
 </div>
 
@@ -43,31 +44,9 @@
   .tabs {
     display: flex;
     gap: 4px;
-    padding: 2px;
-    overflow-x: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--surface-active) var(--surface-hover);
-  }
-  button {
-    flex: 0 0 auto;
-    width: auto;
-    height: 36px;
-    padding: 0 12px;
-    border-radius: 12px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 7px;
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
+    padding: 4px;
+    overflow: visible;
   }
   svg { width: 16px; height: 16px; }
-  button:hover, button:active { background: var(--surface-active); color: var(--text); }
-  button.selected { background: var(--accent); color: var(--text); }
-  @media (max-width: 840px) {
-    button { width: 36px; padding: 0; }
-    span { display: none; }
-  }
+  @media (max-width: 1450px) { .label { display: none; } .tabs :global(.face) { padding: 0; } }
 </style>

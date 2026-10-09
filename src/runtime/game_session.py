@@ -168,6 +168,7 @@ def run():
                 print('Performance telemetry unavailable: ' + str(exc), flush=True)
                 collector.stop.set(); collector = None
         status('starting', 'Launching game through the prepared Lutris environment')
+        (root/'game-started').touch()  # Persist before spawning; even a brief run can write saves.
         child = subprocess.Popen(['lutris', '-d', 'lutris:rungameid/' + game_id], stdout=log, stderr=log)
         launch_lock.close(); launch_lock = None
         start = time.monotonic()

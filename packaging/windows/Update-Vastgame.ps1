@@ -17,6 +17,8 @@ try {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Install-Vastgame.ps1')
         exit $LASTEXITCODE
     }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Ensure-Desktop.ps1') -PrepareUpdate -Application $app
+    if ($LASTEXITCODE -ne 0) { throw 'Prepare the desktop before retrying this update.' }
     $ts = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $paths = @()
@@ -27,6 +29,8 @@ try {
     }
     & wsl.exe -d Vastgame -u vastgame --exec bash "$($paths[0])/update-backend.sh" @paths
     if ($LASTEXITCODE -ne 0) { throw 'Update failed. Read its recovery message above.' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'Ensure-Desktop.ps1') -Application $app
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop shortcut setup incomplete. Retry Ensure-Desktop.ps1.' }
     Write-Host "Vastgame $($release.version) updated. Future updates: vastgame update" -ForegroundColor Green
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red

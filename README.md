@@ -5,9 +5,9 @@ Tailscale and Moonlight. One modular source tree serves Linux and Windows/WSL.
 
 ## Use
 
-The optional [desktop shell](desktop/README.md) provides a native window and
-read-only live host cards. It uses Tauri 2, Svelte and the supplied palette;
-it does not yet control sessions. `vastgame hosts --json` supplies NVIDIA
+The optional [desktop app](desktop/README.md) provides a native window, selectable host
+pills, an illustrated game library and explicit Play/shutdown controls. It uses
+Tauri 2, Svelte and the supplied palette. `vastgame hosts --json` supplies NVIDIA
 VM offers using the same eligibility and scoring as CLI selection. Browsing spans
 all regions without the CLI launcher's price or 15-result cap.
 
@@ -32,7 +32,7 @@ Explicit GPU preparation errors are recorded once per instance. Ranking applies 
 penalize hosts. Missing-domain logs and planned `next_state` transitions do not abort
 boot. The 15-minute boot budget pauses the local watcher, retains the VM and saves
 evidence; it does not prove VM failure or penalize the host. Resume with
-`vastgame force connect`. Confirmed `running` status clears a prior provisioning
+`vastgame connect`. Confirmed `running` status clears a prior provisioning
 penalty for that same instance. Reports flag provisioning failures on multiple machines using the
 same image within 24 hours as a compatibility investigation, not a proven diagnosis.
 Bootstrap command failures include source file, line, exit code and command name;
@@ -49,8 +49,10 @@ vastgame stop
 ```
 
 `vastgame help` lists all commands. Short commands and `vastgame game ...`
-share one implementation. The host list remains interactive. `force` skips
-route-quality checks, while identity, integrity and persistence checks still apply.
+share one implementation. The host list remains interactive. Network quality does
+not block startup: no direct-route, latency, jitter or packet-loss threshold is
+enforced locally or on the VM. `force` remains a compatibility alias. Identity,
+integrity, storage and persistence checks still apply.
 
 Host searches include unverified rigs and all NVIDIA GPU families, including
 RTX 3060/3070 Ti and professional/datacenter models, with at least 6 GB VRAM.
@@ -65,8 +67,8 @@ with recent history adjustments. The compact table shows advertised download
 and upload speeds in Mbps. Ranking uses hardware estimates and recent game FPS
 samples at the same resolution/FPS. Estimates
 are not FPS guarantees: game presets are not tracked, and country proximity
-cannot predict your actual Wi-Fi or route. Route results expire after seven days;
-local waiting timeouts do not count as provider GPU failures.
+cannot predict your actual Wi-Fi or route. Historical route-quality results no
+longer affect ranking. Local waiting timeouts do not count as provider GPU failures.
 
 If native Linux Moonlight fails to load its shared libraries, the launcher retries
 an already installed Flatpak Moonlight and imports the native client identity

@@ -12,22 +12,7 @@ calculate_disk_requirement() {
     [[ -n "$id" ]] || return 0
     valid_game_id "$id" || die "Invalid selected game ID"
     manifest="$(game_manifest "$id")"
-    DISK_GB="$(python3 - "$manifest" <<'PY_DISK'
-import json, math, sys
-from pathlib import Path
-m = json.loads(Path(sys.argv[1]).read_text())
-p = m.get('package', {})
-a, u = p.get('size', 0), p.get('unpacked_bytes', 0)
-if not all(type(x) is int and x > 0 for x in (a, u)):
-    raise SystemExit('Package the game first: archive and installed sizes are required')
-parts = p.get('parts', [])
-# Eight bounded parts in flight, streamed into the installed tree; legacy archives
-# still need space for the complete compressed input beside the installation.
-scratch = sum(sorted((x['size'] for x in parts), reverse=True)[:8]) if parts else a
-reserve = 35 * 1024**3  # guest + container images + Proton/prefix/state
-print(max(60, math.ceil(((u + scratch) * 1.15 + reserve) / 10**9)))
-PY_DISK
-)" || die "Could not determine safe VM disk capacity"
+    DISK_GB="$(python3 "$CLIENT_DIR/disk_capacity.py" "$manifest")" || die "Could not determine safe VM disk capacity"
 }
 
 valid_game_id() {
@@ -78,6 +63,12 @@ game_package() {
 }
 
 game_list() {
+    if [[ "${1:-}" == --json ]]; then
+        [[ "$#" == 1 ]] || die "Usage: vastgame list --json"
+        python3 "$CLIENT_DIR/game_catalog.py" list --catalog "$GAME_ROOT" --selected "$SELECTED_GAME_FILE"
+        return
+    fi
+    [[ "$#" == 0 ]] || die "Usage: vastgame list [--json]"
     mkdir -p "$GAME_ROOT"
     shopt -s nullglob
     local found=0 m
