@@ -68,7 +68,7 @@ printf '━━━━━━━━━━━━━━━━━━━━━━━━
 echo \
     "Searching VM-capable offers with ${DISK_GB}GB storage..."
 
-query="num_gpus=1 verified=any rentable=true vms_enabled=true gpu_arch=nvidia gpu_ram>=6 direct_port_count>=1 dph_total<=$MAX_PRICE disk_space>=$DISK_GB geolocation in $EU_COUNTRIES"
+query="$(host_offer_query) dph_total<=$MAX_PRICE geolocation in $EU_COUNTRIES"
 
 raw="$(mktemp)"
 sorted="$(mktemp)"
@@ -78,11 +78,7 @@ trap 'rm -f "$raw" "$sorted"' EXIT
 set +e
 
 search_out="$(
-    vastai search offers "$query" \
-        --storage "$DISK_GB" \
-        --limit 200 \
-        --raw \
-        2>&1
+    search_host_offers "$query" 2>&1
 )"
 
 search_rc=$?
@@ -111,14 +107,7 @@ then
     printf '{}\n' > "$HISTORY_FILE"
 fi
 
-jq \
-    --argjson max "$MAX_RESULTS" \
-    --argjson cap "$MAX_PRICE" \
-    --arg selected_game "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)" \
-    --arg native_resolution "$(native_screen_resolution 2>/dev/null || true)" \
-    --argjson native_fps "$(native_screen_refresh)" \
-    --slurpfile hist "$HISTORY_FILE" \
-    -f "$APP_ROOT/src/providers/vast/rank.jq" "$raw" > "$sorted"
+rank_host_offers "$raw" "$MAX_PRICE" "$MAX_RESULTS" > "$sorted"
 
 count="$(
     jq 'length' "$sorted"
@@ -133,120 +122,22 @@ count="$(
 # ============================================================
 
 echo
-echo "Best rigs — Algeria gaming suitability"
+echo "Best value for $(jq -r '.[0]._vg | .target_resolution + " @ " + (.target_fps | tostring) + " FPS"' "$sorted")"
 echo
-
 {
-    printf \
-        "NO\tTIER\tSCORE\tGPU\tVRAM\tPRICE\tCOUNTRY\tALG\tDOWN\tUP\tREL\tHIST\n"
-
-    jq -r '
-
-        to_entries[]
-
-        |
-
-        [
-            (.key + 1),
-
-            .value._vg.tier,
-
-            (
-                (.value._vg.score | tostring)
-            ),
-
-            (.value.gpu_name // "-"),
-
-            (
-                (
-                    (
-                        (.value.gpu_ram // 0)
-                        / 1024
-                    )
-                    | round
-                    | tostring
-                )
-                + "GB"
-            ),
-
-            (
-                "$"
-                +
-                (
-                    (
-                        (.value.dph_total // 0)
-                        * 1000
-                        | round
-                    )
-                    / 1000
-                    | tostring
-                )
-            ),
-
-            (
-                (.value.geolocation // "-")
-                | gsub("_"; " ")
-            ),
-
-            (
-                (.value._vg.alg | tostring)
-                + "/15"
-            ),
-
-            (
-                (
-                    (.value.inet_down // 0)
-                    | floor
-                    | tostring
-                )
-                + "M"
-            ),
-
-            (
-                (
-                    (.value.inet_up // 0)
-                    | floor
-                    | tostring
-                )
-                + "M"
-            ),
-
-            (
-                (
-                    (
-                        (.value.reliability // 0)
-                        * 1000
-                        | round
-                    )
-                    / 10
-                    | tostring
-                )
-                + "%"
-            ),
-
-            (
-                if .value._vg.hist > 0
-                then "+" + (.value._vg.hist | tostring)
-
-                else (.value._vg.hist | tostring)
-                end
-            )
-        ]
-
-        |
-
-        @tsv
-
-    ' "$sorted"
-
+    printf 'NO\tSCORE\tGPU\tVRAM\t$/HR\tCOUNTRY\tDOWN\tUP\n'
+    jq -r 'to_entries[] | [(.key + 1), .value._vg.score,
+        (.value.gpu_name // "-"),
+        (((.value.gpu_ram // 0) / 1024 | round | tostring) + "GB"),
+        ((.value.dph_total * 1000 | round) / 1000),
+        ((.value.geolocation // "-") | gsub("_"; " ")),
+        ((.value.inet_down // 0 | floor | tostring) + "M"),
+        ((.value.inet_up // 0 | floor | tostring) + "M")] | @tsv' "$sorted"
 } | column -t -s $'\t'
-
 echo
-echo \
-    "S+ 93+ | S 87+ | A 80+ | B 72+ | C 64+ | D <64"
-
-echo \
-    "ALG = Algeria proximity prior; measured local RTT/loss/jitter always overrides score."
+echo "Higher scores favor affordable target performance, route and reliability."
+echo "DOWN / UP = advertised download / upload speed in Mbps."
+echo "Game presets affect FPS; country proximity is only a route estimate."
 
 # ============================================================
 # SELECT
@@ -309,7 +200,7 @@ breakdown="$(
     jq -r '
         .['"$idx"']._vg
         |
-        "GFX \(.gpu)/40  ALG \(.alg)/15  NET+DISK \(.net)/12  REL \(.rel)/12  VRAM \(.vram)/8  CPU \(.cpu)/6  COST \(.cost)/7  HIST \(.hist)"
+        "TARGET \(.gpu)/35  VALUE \(.cost)/20  ROUTE \(.alg)/15  REL \(.rel)/10  RESTORE \(.net)/10  VRAM \(.vram)/5  CPU \(.cpu)/5  HISTORY \(.hist)"
     ' "$sorted"
 )"
 

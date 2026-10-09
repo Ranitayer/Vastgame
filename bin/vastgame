@@ -13,5 +13,5 @@ source "$APP_ROOT/src/manager/persistence.sh"
 source "$APP_ROOT/src/manager/catalog.sh"
 source "$APP_ROOT/src/manager/publication.sh"
 # Help works without Vast, Tailscale, or a configured account.
-case "${1:-}" in help|-h|--help|streamedit|cleanup|update) ;; *) check_dependencies ;; esac
+case "${1:-}" in help|-h|--help|streamedit|cleanup|update|hosts) ;; *) check_dependencies ;; esac
 source "$APP_ROOT/src/manager/commands.sh"

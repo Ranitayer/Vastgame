@@ -7,7 +7,9 @@ try {
     $base = 'https://github.com/Ranitayer/Vastgame/releases/latest/download'
     $zip = Join-Path $temporary 'Vastgame.zip'
     Write-Host 'Downloading the latest Vastgame release...'
-    $checksum = (Invoke-WebRequest -UseBasicParsing -Uri "$base/Vastgame.zip.sha256" -TimeoutSec 60).Content.Trim().Split(' ')[0]
+    $checksumFile = Join-Path $temporary 'Vastgame.zip.sha256'
+    Invoke-WebRequest -UseBasicParsing -Uri "$base/Vastgame.zip.sha256" -OutFile $checksumFile -TimeoutSec 60
+    $checksum = ((Get-Content -Raw -Encoding UTF8 -LiteralPath $checksumFile).Trim() -split '\s+')[0]
     if ($checksum -notmatch '^[0-9a-f]{64}$') { throw 'Invalid release checksum.' }
     Invoke-WebRequest -UseBasicParsing -Uri "$base/Vastgame.zip" -OutFile $zip -TimeoutSec 300
     if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $checksum) { throw 'Download checksum mismatch; no update applied.' }

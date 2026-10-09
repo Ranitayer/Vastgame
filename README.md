@@ -5,6 +5,12 @@ Tailscale and Moonlight. One modular source tree serves Linux and Windows/WSL.
 
 ## Use
 
+The optional [desktop shell](desktop/README.md) provides a native window and
+read-only live host cards. It uses Tauri 2, Svelte and the supplied palette;
+it does not yet control sessions. `vastgame hosts --json` supplies NVIDIA
+VM offers using the same eligibility and scoring as CLI selection. Browsing spans
+all regions without the CLI launcher's price or 15-result cap.
+
 Startup and client failures save private, redacted evidence under
 `~/.local/state/vastgame/reports/<instance-id>/`. Run `vastgame logs report` to read
 the latest summary and locate its files. Reports include status transitions and
@@ -51,6 +57,16 @@ RTX 3060/3070 Ti and professional/datacenter models, with at least 6 GB VRAM.
 Bandwidth and reliability affect ranking without excluding offers. Price,
 region, storage and VM compatibility requirements still apply; GPU streaming
 support is checked during setup.
+
+Rig ranking uses your saved stream resolution/FPS and favors affordable rigs
+that meet the target over surplus GPU power. Weights: target performance 35,
+price value 20, proximity 15, reliability 10, restore/network 10, VRAM 5 and CPU 5,
+with recent history adjustments. The compact table shows advertised download
+and upload speeds in Mbps. Ranking uses hardware estimates and recent game FPS
+samples at the same resolution/FPS. Estimates
+are not FPS guarantees: game presets are not tracked, and country proximity
+cannot predict your actual Wi-Fi or route. Route results expire after seven days;
+local waiting timeouts do not count as provider GPU failures.
 
 If native Linux Moonlight fails to load its shared libraries, the launcher retries
 an already installed Flatpak Moonlight and imports the native client identity

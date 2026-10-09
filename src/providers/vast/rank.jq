@@ -210,27 +210,32 @@
     ;
 
     # --------------------------------------------------------
-    # Cost/value: 0..7
-    # Cheap matters, but cannot overwhelm GPU/route quality.
-    # --------------------------------------------------------
-
+    # Price/value: 0..20. Extra GPU power stops earning points at the target.
     def cost_pts:
+        (1 - ((.dph_total // $cap) / ($ARGS.named.value_cap // $cap))) * 20 | [0, .] | max
+    ;
 
-        if   (.dph_total // 999) <= 0.15 then 7.0
-        elif (.dph_total // 999) <= 0.20 then 6.5
-        elif (.dph_total // 999) <= 0.25 then 5.5
-        elif (.dph_total // 999) <= 0.30 then 4.5
-        elif (.dph_total // 999) <= 0.35 then 3.5
-        elif (.dph_total // 999) <= 0.40 then 2.5
-        elif (.dph_total // 999) <= 0.50 then 1.5
-        elif (.dph_total // 999) <= 0.60 then 0.8
-        elif (.dph_total // 999) <= 0.70 then 0.3
-        else 0
+    # Hardware is an estimate, not a promised FPS. Matching game samples win.
+    def game_fit($h):
+        ($h["machine:" + ((.machine_id // "") | tostring)] // {}) as $x |
+        ([$x.performance_sessions[]?, $x.performance?]
+         | map(select(. != null and (.samples // 0) >= 30
+             and (.updated // 0) >= (now - 604800)
+             and .game_id == $selected_game and .resolution == $native_resolution
+             and .target_fps == $native_fps and (.game_fps // 0) > 0))
+         | sort_by(.updated) | last) as $sample |
+        if $sample != null then
+            {fit: ([1, ($sample.game_fps / $native_fps)] | min), basis: "Game measured"}
+        else
+            ($native_resolution | split("x") | map(tonumber?)) as $size |
+            (((($size[0] // 1920) * ($size[1] // 1080) / 2073600) | sqrt)
+              * (($native_fps / 60) | sqrt) * 24 | [18, .] | max | [40, .] | min) as $needed |
+            {fit: ([1, (gpu_pts / $needed)] | min), basis: "Estimated"}
         end
     ;
 
     # --------------------------------------------------------
-    # Learned route history: -30..+8
+    # Learned history: recent provider failures -30..-18; route -12..+8
     # machine_id is preferred over country guesses.
     # --------------------------------------------------------
 
@@ -245,16 +250,10 @@
         ([$x.provisioning_failures[]? | select(.category == "provider_gpu" and (now - .time) < 604800)] | length) as $boot_failures |
         if $boot_failures >= 2 then -30
         elif $boot_failures == 1 then -18
-        elif ($x | length) == 0 then 0
-
-        elif
-            (($x.last_result // "") == "fail")
-            and
-            (($x.failures // 0) >= 2)
-        then -30
+        elif ($x | length) == 0 or ($x.last_test // 0) < (now - 604800) then 0
 
         elif (($x.last_result // "") == "fail")
-        then -18
+        then -12
 
         elif
             (($x.last_result // "") == "pass")
@@ -343,19 +342,21 @@
     |
 
     map(
-        gpu_pts as $gpu
+        game_fit($history) as $game
+        |
+        ($game.fit * 35) as $gpu
         |
         alg_pts as $alg
         |
-        net_pts($history) as $net
+        (net_pts($history) * 10 / 12) as $net
         |
-        rel_pts as $rel
+        (rel_pts * 10 / 12) as $rel
         |
-        vram_pts as $vram
+        (vram_pts * 5 / 8) as $vram
         |
-        cpu_pts as $cpu
+        (cpu_pts * 5 / 6) as $cpu
         |
-        cost_pts as $cost
+        (cost_pts * $game.fit) as $cost
         |
         (hist_bonus($history) + performance_bonus($history)) as $hist
 
@@ -386,6 +387,9 @@
         . + {
             _vg: {
                 score: ($score | r1),
+                target_resolution: $native_resolution,
+                target_fps: $native_fps,
+                basis: $game.basis,
                 tier: tier($score),
 
                 gpu: ($gpu | r1),
@@ -406,6 +410,7 @@
     sort_by(
         [
             -._vg.score,
+            (.dph_total // 999),
             -._vg.gpu,
             -._vg.alg,
             -._vg.rel,

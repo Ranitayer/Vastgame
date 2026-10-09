@@ -3,6 +3,10 @@ __pycache__/
 *.so
 /build/
 /dist/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
 *.log
 
 # Private account exports never belong in source or public releases.

@@ -108,6 +108,7 @@ class ArchitectureTests(unittest.TestCase):
             script=r'''set -Eeuo pipefail
 APP_ROOT="$VASTGAME_TEST_ROOT"
 source "$APP_ROOT/src/manager/common.sh"
+source "$APP_ROOT/src/manager/client.sh"
 calculate_disk_requirement() { :; }
 all_vastgame_instances() { printf '[]\n'; }
 native_screen_resolution() { echo 1920x1080; }
@@ -164,6 +165,33 @@ printf 'CREATE_STAGE_REACHED:%s\n' "$offer_id"
             input=json.dumps(offers),capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual({offer['id'] for offer in json.loads(result.stdout)},set(range(1,12)) | {20})
+
+    def test_ranking_rewards_sufficient_affordable_gpu_and_expires_route_failure(self):
+        import time
+        base=dict(vms_enabled=True, gpu_ram=12288, reliability=0.99,
+                  inet_up=500, inet_down=1000, cpu_cores_effective=8,
+                  cpu_ghz=3.5, geolocation='Spain, ES', disk_bw=1000)
+        offers=[dict(base,id=1,machine_id=1,gpu_name='RTX 3080 Ti',dph_total=0.175),
+                dict(base,id=2,machine_id=2,gpu_name='RTX 5090',gpu_ram=32768,dph_total=0.7)]
+        def rank(history):
+            with tempfile.NamedTemporaryFile(mode='w') as f:
+                json.dump(history,f); f.flush()
+                return json.loads(subprocess.check_output(['jq',
+                    '--argjson','max','15','--argjson','cap','0.7',
+                    '--arg','selected_game','still','--arg','native_resolution','1920x1080',
+                    '--argjson','native_fps','60','--slurpfile','hist',f.name,
+                    '-f',str(ROOT/'src/providers/vast/rank.jq')],
+                    input=json.dumps(offers),text=True))
+        clean=rank({})
+        self.assertEqual(clean[0]['id'],1)
+        self.assertEqual(clean[0]['_vg']['basis'],'Estimated')
+        stale=rank({'machine:1':dict(last_result='fail',failures=99,last_test=0)})
+        self.assertEqual(stale,clean)
+        measured=rank({'machine:1':{'performance':dict(samples=30,updated=time.time(),
+            game_id='still',resolution='1920x1080',target_fps=60,game_fps=20,
+            delivery_score=100,game_delivery_score=33)}})
+        self.assertEqual(measured[0]['id'],2)
+        self.assertEqual(measured[1]['_vg']['basis'],'Game measured')
 
     def test_source_shell_and_python_syntax(self):
         for path in [ROOT/'bin/vastgame',*sorted((ROOT/'src').rglob('*.sh')),*sorted((ROOT/'packaging/windows').glob('*.sh'))]:

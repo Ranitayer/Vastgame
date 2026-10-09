@@ -51,12 +51,14 @@ VM lifecycle:
   vastgame force start <game-id>    Start a selected game without route checks
   vastgame connect                  Resume monitoring an existing Vastgame VM
   vastgame status                   Show current Vast instances
+  vastgame hosts --json             Browse scored NVIDIA VM offers; all regions, no price cap
   vastgame logs                     Show the selected VM bootstrap log
   vastgame logs game                Show game launch status and Lutris/Proton log tail
   vastgame logs report              Show the latest redacted failure report and its folder
   vastgame stop                     Save verified state, then destroy VM
   vastgame setup                    Save or change the Vast template hash
   vastgame streamedit               Edit stream resolution, FPS, bitrate and Moonlight options
+                                    Rig ranking uses these targets and favors affordable performance
   vastgame cleanup                  Preview expired, inactive local artifacts
   vastgame cleanup --apply          Remove previewed artifacts; preserve saves and releases
   vastgame update                   Install the latest Windows release; keep accounts/settings
@@ -146,6 +148,15 @@ case "$command" in
         ;;
 esac
 case "$command" in
+    hosts)
+        [[ "$#" == 1 && "$1" == --json ]] || die "Usage: vastgame hosts --json"
+        DISK_GB=60
+        calculate_disk_requirement
+        query="$(host_offer_query)"
+        search_host_offers "$query" |
+            rank_host_offers /dev/stdin 1e99 2147483647 |
+            python3 "$APP_ROOT/src/providers/vast/desktop_hosts.py" "$DISK_GB"
+        ;;
     update)
         [[ "${VASTGAME_WINDOWS:-0}" == 1 ]] || die "Windows updater only. On Linux, update your Vastgame source checkout."
         vastgame-native update

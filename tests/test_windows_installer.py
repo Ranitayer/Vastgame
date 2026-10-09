@@ -21,6 +21,14 @@ updater=importlib.util.module_from_spec(update_spec); update_spec.loader.exec_mo
 
 
 class WindowsUpdateTests(unittest.TestCase):
+    def test_checksum_is_read_as_text_and_still_verified(self):
+        source = (WINDOWS/'Check-Updates.ps1').read_text()
+        self.assertNotIn('.Content.Trim()', source)
+        self.assertIn('-OutFile $checksumFile', source)
+        self.assertIn('Get-Content -Raw -Encoding UTF8 -LiteralPath $checksumFile', source)
+        self.assertIn('Get-FileHash -LiteralPath $zip -Algorithm SHA256', source)
+        self.assertIn('Download checksum mismatch; no update applied.', source)
+
     def test_windows_bridge_preserves_configured_codec_and_pairing_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); moonlight=root/'Moonlight'; moonlight.mkdir()

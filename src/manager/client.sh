@@ -394,3 +394,27 @@ launch_moonlight() {
     fi
     return 0
 }
+
+# Shared by CLI selection and the read-only desktop catalog; no browsing caps leak into value scoring.
+rank_host_offers() {
+    local input="$1" cap="$2" count="$3" settings resolution fps
+    settings="$(read_stream_settings)" || return 1
+    resolution="$(jq -r '.resolution' <<< "$settings")"
+    fps="$(jq -r '.fps' <<< "$settings")"
+    if [[ "$resolution" == native ]]; then
+        if ! resolution="$(native_screen_resolution 2>/dev/null)"; then
+            resolution="1920x1080"
+            warn "Screen size unavailable; ranking assumes 1920x1080. Set a resolution with vastgame streamedit for accurate ranking." >&2
+        fi
+    fi
+    if [[ "$fps" == native ]]; then
+        fps="$(native_screen_refresh)"
+    fi
+    settings="$(python3 "$CLIENT_DIR/stream_settings.py" resolve "$(stream_settings_file)" "${VASTGAME_WINDOWS:-0}" "$resolution" "$fps")" || return 1
+    jq --argjson max "$count" --argjson cap "$cap" --argjson value_cap "$MAX_PRICE" \
+        --arg selected_game "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)" \
+        --arg native_resolution "$(jq -r .resolution <<< "$settings")" \
+        --argjson native_fps "$(jq -r .fps <<< "$settings")" \
+        --slurpfile hist <(if jq -e 'type == "object"' "$HISTORY_FILE" >/dev/null 2>&1; then cat "$HISTORY_FILE"; else printf '{}\n'; fi) \
+        -f "$APP_ROOT/src/providers/vast/rank.jq" "$input"
+}

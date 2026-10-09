@@ -323,3 +323,14 @@ check_instance_failure() {
             "Vast reported: $msg"
     fi
 }
+
+# Shared eligibility for CLI selection and desktop browsing; callers add view limits only.
+host_offer_query() {
+    printf 'num_gpus=1 verified=any rentable=true vms_enabled=true gpu_arch=nvidia gpu_ram>=6 direct_port_count>=1 disk_space>=%s\n' "$DISK_GB"
+}
+
+# Vast's implicit response limit omits offers before local region filtering.
+search_host_offers() {
+    timeout 60s vastai search offers "$1" --storage "$DISK_GB" \
+        --limit 10000 --order dph_total --raw
+}
