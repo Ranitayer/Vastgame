@@ -90,6 +90,8 @@ Game catalog:
   vastgame details <app-id>         Read cached Steam game information
   vastgame artwork <app-id> cover|banner
                                    Fetch cached Steam library artwork
+  vastgame artwork --game <id> cover|banner
+                                   Resolve a library game and cache its Steam artwork
   vastgame game list [--json]       List registered games; JSON for the desktop library
   vastgame game inspect <id>        Print a game's manifest
   vastgame game validate <id>       Validate its manifest and executable
@@ -198,8 +200,8 @@ case "$command" in
         python3 "$CLIENT_DIR/game_details.py" "$1"
         ;;
     artwork)
-        [[ "$#" == 2 ]] || die "Usage: vastgame artwork STEAM_APP_ID cover|banner"
-        python3 "$CLIENT_DIR/game_artwork.py" "$1" "$2"
+        [[ "$#" == 2 || ( "$#" == 3 && "$1" == --game ) ]] || die "Usage: vastgame artwork STEAM_APP_ID cover|banner, or --game GAME_ID cover|banner"
+        python3 "$CLIENT_DIR/game_artwork.py" "$@"
         ;;
     hosts)
         [[ "${1:-}" == --json && ( "$#" == 1 || ( "$#" == 3 && "${2:-}" == --game ) ) ]] || die "Usage: vastgame hosts --json [--game ID]"

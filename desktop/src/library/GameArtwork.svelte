@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import { library } from './catalog.svelte';
   import { artwork } from './artwork';
-  let { name, appid, kind = 'cover' }: { name: string; appid: number | null; kind?: 'cover' | 'banner' } = $props();
+  let { name, gameId, kind = 'cover' }: { name: string; gameId: string; kind?: 'cover' | 'banner' } = $props();
   let root: HTMLDivElement;
   let visible = $state(false);
   let image = $state<string | null>(null);
@@ -17,12 +17,12 @@
   let lastKey = '';
   $effect(() => {
     library.revision;
-    const key = `${appid}-${kind}`;
+    const key = `${gameId}-${kind}`;
     if (lastKey !== key) { image = null; lastKey = key; }
     if (!visible) { image = null; return; }
-    if (!appid || untrack(() => image) !== null) return;
+    if (!gameId || untrack(() => image) !== null) return;
     let current = true;
-    void artwork(appid, kind).then(value => { if (current) image = value; });
+    void artwork(gameId, kind).then(value => { if (current) image = value; });
     return () => { current = false; };
   });
 </script>

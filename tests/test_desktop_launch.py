@@ -17,16 +17,34 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 class DesktopLaunchTests(unittest.TestCase):
-    def test_connect_uses_only_the_stored_vm_and_does_not_rewrite_launch_state(self):
+    def test_connect_uses_only_the_stored_vm_and_preserves_it_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary); job = 'a' * 32; folder = state / job; folder.mkdir()
             record = dict(job=job, instance_id='42', label='vastgame-123', finished=True, game_running=True)
             path = folder / 'job.json'; path.write_text(json.dumps(record))
             with patch.object(module, 'STATE', state), patch.object(module, 'alive', return_value=False), patch.object(module, 'run', return_value=(1, False)) as run, patch.object(module, 'emit') as emit:
                 module.connect(job)
-                run.assert_called_once_with(['connect', '--instance-id', '42', '--label', 'vastgame-123'], folder)
-                emit.assert_called_with('finished', ok=False, phase='Connection failed; VM retained', instance_id='42')
-            self.assertEqual(json.loads(path.read_text()), record)
+                run.assert_called_once_with(['connect', '--instance-id', '42', '--label', 'vastgame-123'], folder, record)
+                emit.assert_called_with('finished', ok=False, phase='Connection failed; VM retained', instance_id='42', game_running=True)
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved['instance_id'], '42')
+            self.assertFalse(saved['success'])
+
+    def test_connect_after_game_exit_records_a_successful_restart_on_the_same_vm(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); job = 'a' * 32; folder = state / job; folder.mkdir()
+            record = dict(job=job, instance_id='42', label='vastgame-123', finished=True, success=False, game_running=False)
+            path = folder / 'job.json'; path.write_text(json.dumps(record))
+            def restarted(args, target, live):
+                self.assertEqual(args, ['connect', '--instance-id', '42', '--label', 'vastgame-123'])
+                live.update(module.update_job(target, game_running=True))
+                return 0, False
+            with patch.object(module, 'STATE', state), patch.object(module, 'alive', return_value=False), patch.object(module, 'run', side_effect=restarted), patch.object(module, 'emit'):
+                module.connect(job)
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved['instance_id'], '42')
+            self.assertTrue(saved['success'])
+            self.assertTrue(saved['game_running'])
 
     def test_connect_refuses_a_stopped_or_mismatched_job_without_spawning(self):
         with tempfile.TemporaryDirectory() as temporary:

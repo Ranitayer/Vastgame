@@ -125,6 +125,7 @@ def create(folder, gid=None, executable=None, dlss=False, progress=None):
 
 
 def library_summary(catalog, selected_file):
+    from game_identity import resolve
     try:
         selected = selected_file.read_text().strip()
     except FileNotFoundError:
@@ -160,7 +161,7 @@ def library_summary(catalog, selected_file):
             display = overrides.get(gid, {})
             if not isinstance(display, dict):
                 display = {}
-            appid = display.get('steam_appid', manifest.get('steam_appid'))
+            identity = resolve(manifest, display)
             packaged = bool(size('size') and re.fullmatch(r'[0-9a-fA-F]{64}', str(package.get('sha256', ''))))
             if not packaged and package.get('parts'):
                 try:
@@ -171,8 +172,7 @@ def library_summary(catalog, selected_file):
                 disk_gb = required_disk_gb(manifest)
             except (ValueError, TypeError):
                 disk_gb = None
-            games.append(dict(id=gid, name=text(display.get('name'), 160).strip() or manifest['name'].strip()[:160],
-                steam_appid=appid if type(appid) is int and 0 < appid < 2**32 else None,
+            games.append(dict(id=gid, name=identity['name'], steam_appid=identity['steam_appid'],
                 version=text(manifest.get('version', ''), 40), selected=gid == selected,
                 packaged=packaged,
                 required_disk_gb=disk_gb, download_bytes=size('size'), installed_bytes=size('unpacked_bytes'),

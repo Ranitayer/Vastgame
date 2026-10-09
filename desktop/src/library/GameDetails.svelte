@@ -16,7 +16,7 @@
   let notice = $state('');
   let playAnchor = $state<HTMLDivElement>();
   const activeRig = $derived(!!launch.instanceId);
-  const connected = $derived(activeRig && (launch.gameRunning || launch.status === 'ready'));
+  const connected = $derived(activeRig);
   $effect(() => { game.id; notice = ''; });
   $effect(() => { game.id; logsOpen = false; });
   async function requestPlay() { const id = game.id; notice = ''; const message = await play(game, selectedRig); if (game.id === id) notice = message; }
@@ -34,7 +34,7 @@
 </script>
 <aside class="details" aria-labelledby="game-title">
   <div class="hero">
-    <GameArtwork name={game.name} appid={game.steam_appid} kind="banner"/><div class="fade"></div>
+    <GameArtwork name={game.name} gameId={game.id} kind="banner"/><div class="fade"></div>
     <div class="play" bind:this={playAnchor}><PlayButton name={activeRig ? launch.gameName : game.name} {connected} busy={(activeRig || launch.gameId === game.id) && (launch.busy || launch.connecting)} onclick={() => void (connected ? requestConnect() : requestPlay())}/>{#if activeRig}<ShutdownButton/>{/if}{#if notice}<Notice anchor={playAnchor} text={notice}/>{:else if launch.gameId === game.id && launch.status === 'error'}<Notice anchor={playAnchor} text={launch.error?.message || launch.phase} detail={launch.error ? `[${launch.error.code}] ${launch.error.message}` : launch.phase}/>{/if}</div>
   </div>
     <div class="information">

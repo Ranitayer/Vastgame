@@ -11,3 +11,9 @@ export function refreshLibrary() {
   return pending;
 }
 export function ensureLibrary() { if (!library.catalog) return refreshLibrary(); }
+export function applyIdentity(id: string, identity?: { name: string; steam_appid: number | null }) {
+  const game = library.catalog?.games.find(game => game.id === id);
+  if (!game || !identity?.steam_appid || !Number.isInteger(identity.steam_appid) || typeof identity.name !== 'string') return;
+  game.name = identity.name;
+  game.steam_appid = identity.steam_appid;
+}

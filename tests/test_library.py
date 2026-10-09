@@ -48,3 +48,17 @@ class LibrarySummaryTests(unittest.TestCase):
             root = Path(temporary)
             self.assertEqual(module.library_summary(root/'games', root/'selected'), {'games': [], 'skipped': 0})
             self.assertFalse((root/'games').exists())
+
+    def test_new_pc_resolves_ids_without_library_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            game = root/'games/re9'
+            game.mkdir(parents=True)
+            manifest = dict(id='re9', name='re9', game=dict(executable='re9.exe'))
+            path = game/'manifest.json'
+            path.write_text(json.dumps(manifest))
+            summary = module.library_summary(root/'games', root/'selected')['games'][0]
+            self.assertEqual(summary['steam_appid'], 3764200)
+            self.assertEqual(summary['name'], 'Resident Evil Requiem')
+            self.assertFalse((root/'library.json').exists())
+            self.assertEqual(json.loads(path.read_text()), manifest)

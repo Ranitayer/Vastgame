@@ -41,6 +41,7 @@ def phase(line):
         ('| DRIVE |', 'Restoring game and saves'), ('| DOCKER |', 'Starting streaming server'),
         ('Restore complete;', 'Starting game'), ('CLOUD GAMING READY', 'Starting game'),
         ('Streaming ', 'Starting Moonlight'), ('Destroying Vast instance', 'Shutting down rig'),
+        ('Closing the game before', 'Closing game'), ('Game ignored its close request', 'Closing game'),
         ('Final Google Drive', 'Backup verified'), ('Game never started;', 'Shutting down rig'),
         ('Game process detected.', 'Game running'), ('Final backup', 'Backing up saves'), ('Backing up saves', 'Backing up saves')):
         if fragment in line:
@@ -131,13 +132,13 @@ def run(args, folder, record=None):
             if '-----END ' in line and 'PRIVATE KEY-----' in line: secret = False
             return
         line = redact(line).replace(str(Path.home()), '~')[:4096]
-        entry = dict(type='log', line=line)
+        entry = dict(type='log', line=line, time=int(time.time() * 1000))
         if log.exists() and log.stat().st_size >= 2 * 1024 * 1024:
             log.replace(folder / 'previous.jsonl')
         with log.open('a') as file:
             file.write(json.dumps(entry) + '\n')
         log.chmod(0o600)
-        emit('log', line=line)
+        emit('log', line=line, time=entry['time'])
         name = phase(line)
         if name and name != last_phase:
             last_phase = name
@@ -217,8 +218,9 @@ def connect(job):
         raise ValueError('VM identity is not available. Refresh before connecting')
     if not record.get('finished') or alive(record) or alive(record, True):
         raise ValueError('Wait for the current rig operation to finish before connecting')
-    code, _ = run(['connect', '--instance-id', instance, '--label', label], folder)
-    emit('finished', ok=code == 0, phase='Stream opened' if code == 0 else 'Connection failed; VM retained', instance_id=instance)
+    code, _ = run(['connect', '--instance-id', instance, '--label', label], folder, record)
+    record = update_job(folder, finished=True, success=code == 0, phase='Game running' if code == 0 else 'Connection failed; VM retained')
+    emit('finished', ok=code == 0, phase=record['phase'], instance_id=record.get('instance_id'), game_running=bool(record.get('game_running')))
 
 
 def watch(job):
@@ -258,7 +260,7 @@ def watch(job):
                 for line in data.splitlines()[-500:]:
                     try:
                         event = json.loads(line)
-                        if event.get('type') == 'log' and isinstance(event.get('line'), str): send('log', line=event['line'][:4096])
+                        if event.get('type') == 'log' and isinstance(event.get('line'), str): send('log', line=event['line'][:4096], time=event.get('time'))
                     except (ValueError, TypeError): pass
             progress = record.get('progress')
             if progress != last_progress:

@@ -6,7 +6,7 @@
 </script>
 <article class="game-card" class:selected>
   <div class="cover">
-    <button class="open" onclick={onclick} aria-label={`View ${game.name}`} title={game.name} aria-expanded={selected} aria-controls="game-details"><GameArtwork name={game.name} appid={game.steam_appid}/></button>
+    <button class="open" onclick={onclick} aria-label={`View ${game.name}`} title={game.name} aria-expanded={selected} aria-controls="game-details"><GameArtwork name={game.name} gameId={game.id}/></button>
     <div class="gear"><Button icon size="small" variant="surface" aria-label={`Settings for ${game.name} (coming soon)`} title="Settings coming soon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 3h5l.5 2 2 1.2 2-.6 2.5 4.3L20 11.5v2l1.5 1.6L19 19.4l-2-.6-2 1.2-.5 2h-5L9 20l-2-1.2-2 .6-2.5-4.3L4 13.5v-2L2.5 9.9 5 5.6l2 .6L9 5Z"/><circle cx="12" cy="12.5" r="3"/></svg></Button></div>
   </div>
 </article>

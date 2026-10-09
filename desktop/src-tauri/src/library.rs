@@ -4,11 +4,11 @@ pub async fn browse_library() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub async fn game_artwork(steam_appid: u32, kind: String) -> Result<serde_json::Value, String> {
-    if steam_appid == 0 || !matches!(kind.as_str(), "cover" | "banner") {
+pub async fn game_artwork(game_id: String, kind: String) -> Result<serde_json::Value, String> {
+    if !crate::backend::valid_game_id(&game_id) || !matches!(kind.as_str(), "cover" | "banner") {
         return Err("Invalid artwork request.".into());
     }
-    crate::backend::read(vec!["artwork".into(), steam_appid.to_string(), kind], "image").await
+    crate::backend::read(vec!["artwork".into(), "--game".into(), game_id, kind], "image").await
 }
 
 #[tauri::command]

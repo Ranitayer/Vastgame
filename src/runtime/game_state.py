@@ -439,7 +439,7 @@ def containers(gid):
 
 
 def idle(gid):
-    # Require all processes using this exact Wine prefix to exit, not just the EXE.
+    # Require all game executables in this exact Wine prefix to exit.
     for container in containers(gid):
         container_state(container, 'idle', gid)
 
@@ -447,33 +447,70 @@ def idle(gid):
 def container_state(container, action, gid):
     # Run the matching state helper through stdin; never replace a live container's code.
     subprocess.run(['docker', 'exec', '-i', container, 'python3', '-', action, gid],
-                   input=Path(__file__).read_bytes(), check=True, timeout=15)
+                   input=Path(__file__).read_bytes(), check=True, timeout=15, capture_output=action in ('idle', 'close'))
 
 
-def container_idle(gid):
+def wine_processes(gid, proc=Path('/proc'), server=False):
     prefix = '/prefixes/' + gid
-    for p in Path('/proc').glob('[0-9]*'):
+    result = []
+    for p in proc.glob('[0-9]*'):
         try:
             env = (p / 'environ').read_bytes().split(b'\0')
             args = (p / 'cmdline').read_bytes()
             system = (b'explorer.exe', b'services.exe', b'winedevice.exe', b'wineboot.exe', b'rpcss.exe', b'conhost.exe', b'plugplay.exe')
             prefixes = [e[11:].decode() for e in env if e.startswith(b'WINEPREFIX=')]
             ours = any(Path(e).resolve() == Path(prefix).resolve() for e in prefixes)
-            if ours and b'.exe' in args.lower() and not any(x in args.lower() for x in system):
-                raise RuntimeError('Game/Wine still running. Exit the game cleanly, then retry; no backup or destroy was performed.')
+            if ours and ((p / 'comm').read_text().strip().startswith('wineserver') if server else b'.exe' in args.lower() and not any(x in args.lower() for x in system)):
+                result.append(int(p.name))
         except (FileNotFoundError, ProcessLookupError):
             continue
+    return result
+
+
+def container_idle(gid):
+    if wine_processes(gid):
+        raise RuntimeError('Game processes are still closing; backup and VM destruction are blocked.')
+
+
+def terminate_game(gid, server=False):
+    import signal
+    # Pin each PID before rechecking its prefix; never signal a reused/unrelated PID.
+    for pid in wine_processes(gid, server=server):
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            continue
+        try:
+            if pid in wine_processes(gid, server=server):
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        finally:
+            os.close(fd)
+
+
+def flush_runtime(gid):
+    container_idle(gid)
+    # Wine handles SIGTERM by flushing its registry; do not use wineserver -k.
+    terminate_game(gid, server=True)
+    deadline = time.monotonic() + 10
+    while wine_processes(gid, server=True):
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Wine registry flush did not finish; VM retained without backup or destruction.')
+        time.sleep(0.2)
+    container_idle(gid)
 
 
 def close_windows(gid):
     # WM_DELETE_WINDOW asks the game to quit through its normal UI; never SIGKILL.
     import ctypes as c
-    from game_session import config
     m = json.loads((Path('/profiles') / gid / 'manifest.json').read_text())
-    exe = Path(config(m)['game']['exe']).name.lower()
+    if m.get('id') != gid: raise ValueError('Game identity differs from manifest')
+    exe = relative(m['game']['executable']).name.lower()
     display = None
     pids = set()
-    for p in Path('/proc').glob('[0-9]*'):
+    for pid in wine_processes(gid):
+        p = Path('/proc') / str(pid)
         try:
             args = (p / 'cmdline').read_bytes().replace(b'\\', b'/').lower()
             if exe.encode() in args:
@@ -481,6 +518,8 @@ def close_windows(gid):
                 for entry in (p / 'environ').read_bytes().split(b'\0'):
                     if entry.startswith(b'DISPLAY='):
                         display = entry[8:]
+                    elif entry.startswith(b'XAUTHORITY='):
+                        os.environ['XAUTHORITY'] = entry[11:].decode()
         except OSError:
             continue
     if not display:
@@ -542,18 +581,34 @@ def close_windows(gid):
 
 
 def stop_cleanly(gid):
+    print('Closing the game before backing up saves...', flush=True)
     for container in containers(gid):
-        container_state(container, 'close', gid)
-    deadline = time.monotonic() + 120
+        try:
+            container_state(container, 'close', gid)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or b'').decode(errors='replace').strip()[-500:]
+            print('Window close unavailable; scoped process shutdown will be used if needed. ' + detail, flush=True)
+    started = time.monotonic()
+    terminating = False
     while True:
         try:
             idle(gid)
             time.sleep(3)
             idle(gid)
+            for container in containers(gid):
+                container_state(container, 'flush', gid)
+            print('✓ Game closed and Wine state flushed', flush=True)
             return
-        except subprocess.CalledProcessError:
-            if time.monotonic() >= deadline:
-                raise RuntimeError('Game did not close cleanly within 120s; VM retained. Exit the game and retry.')
+        except subprocess.CalledProcessError as exc:
+            elapsed = time.monotonic() - started
+            if elapsed >= 20 and not terminating:
+                print('Game ignored its close request; terminating only this game’s Wine processes...', flush=True)
+                for container in containers(gid):
+                    container_state(container, 'terminate', gid)
+                terminating = True
+            if elapsed >= 120:
+                detail = (exc.stderr or b'').decode(errors='replace').strip()[-1000:]
+                raise RuntimeError('Automatic game shutdown did not finish within 120s; VM retained without backup or destruction. ' + detail)
             time.sleep(2)
 
 
@@ -627,7 +682,7 @@ def main():
             prepare_shaders(gid)
             os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['backup', 'restore', 'idle', 'close', 'resume'])
+    parser.add_argument('action', choices=['backup', 'restore', 'idle', 'close', 'terminate', 'flush', 'resume'])
     parser.add_argument('game_id')
     parser.add_argument('--root', default='/srv/gaming')
     parser.add_argument('--remote', default='gdrive:VastGaming')
@@ -646,6 +701,10 @@ def main():
         raise ValueError('A live checkpoint cannot be a final backup')
     if a.action == 'close':
         close_windows(a.game_id); return
+    if a.action == 'terminate':
+        terminate_game(a.game_id); return
+    if a.action == 'flush':
+        flush_runtime(a.game_id); return
     if a.action == 'idle':
         container_idle(a.game_id); return
     if a.label and os.environ.get('VASTGAME_LAUNCH_LABEL', '') != a.label:

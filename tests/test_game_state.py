@@ -13,6 +13,46 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/runtime'))
 import game_state as state
 
 
+class GameShutdownTests(unittest.TestCase):
+    def test_only_game_executables_in_the_exact_prefix_are_shutdown_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            for pid, prefix, executable in [(1, 'fixture', 'Game.exe'), (2, 'other', 'Game.exe'), (3, 'fixture', 'services.exe'), (4, 'fixture', 'lutris'), (5, 'fixture', 'wineserver'), (6, 'other', 'wineserver')]:
+                folder = proc / str(pid); folder.mkdir()
+                (folder/'environ').write_bytes(f'WINEPREFIX=/prefixes/{prefix}\0'.encode())
+                (folder/'cmdline').write_bytes(executable.encode())
+                (folder/'comm').write_text(executable)
+            self.assertEqual(state.wine_processes('fixture', proc), [1])
+            self.assertEqual(state.wine_processes('fixture', proc, server=True), [5])
+
+    def test_pid_identity_is_rechecked_before_a_graceful_signal(self):
+        import signal
+        for current, count in [([], 0), ([42], 1)]:
+            with patch.object(state, 'wine_processes', side_effect=[[42], current]), patch.object(state.os, 'pidfd_open', return_value=7), patch.object(state.os, 'close') as close, patch.object(signal, 'pidfd_send_signal') as send:
+                state.terminate_game('fixture')
+                self.assertEqual(send.call_count, count)
+                if count: send.assert_called_once_with(7, signal.SIGTERM)
+                close.assert_called_once_with(7)
+
+    def test_an_ignored_close_request_uses_scoped_termination_then_verifies_idle(self):
+        busy = subprocess.CalledProcessError(1, 'idle')
+        with patch.object(state, 'containers', return_value=['owned']), patch.object(state, 'container_state') as action, patch.object(state, 'idle', side_effect=[busy, None, None]) as idle, patch.object(state.time, 'monotonic', side_effect=[0, 21]), patch.object(state.time, 'sleep'):
+            state.stop_cleanly('fixture')
+            self.assertEqual([call.args[1] for call in action.call_args_list], ['close', 'terminate', 'flush'])
+            self.assertEqual(idle.call_count, 3)
+
+    def test_registry_flush_waits_for_the_matching_server_to_exit(self):
+        with patch.object(state, 'container_idle') as idle, patch.object(state, 'terminate_game') as terminate, patch.object(state, 'wine_processes', side_effect=[[42], []]), patch.object(state.time, 'monotonic', return_value=0), patch.object(state.time, 'sleep'):
+            state.flush_runtime('fixture')
+            terminate.assert_called_once_with('fixture', server=True)
+            self.assertEqual(idle.call_count, 2)
+
+    def test_unconfirmed_registry_flush_blocks_backup(self):
+        with patch.object(state, 'container_idle'), patch.object(state, 'terminate_game'), patch.object(state, 'wine_processes', return_value=[42]), patch.object(state.time, 'monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(RuntimeError, 'registry flush did not finish'):
+                state.flush_runtime('fixture')
+
+
 class LocalRemote:
     """Filesystem object store; exercises the same commit/restore code."""
     def __init__(self, root): self.root = str(root); self.uploads = []; self.fail = False

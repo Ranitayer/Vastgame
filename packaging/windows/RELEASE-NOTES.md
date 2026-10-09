@@ -1,4 +1,10 @@
-# Vastgame 1.1.7 — Windows desktop
+# Vastgame 1.1.8 — Automatic artwork and rig reconnect
+
+- New PCs automatically resolve game names and Steam IDs from the bundled catalog, without another user's `library.json`. Unknown games use public Steam search with unique exact matches; this applies to existing and future games, with no hardcoded personal game list.
+- Covers and banners load when viewed and cache locally. Game-ID requests share resolved identity with descriptions and reviews. Offline cached images remain available; failed loads can retry on Refresh. Identity and image caches stay bounded.
+- Vast Connect remains available whenever the rig still exists, including after leaving a game or a failed stream. Reconnect uses the same VM identity and never rents a replacement.
+- X starts shutdown with one click. CLI stop and the desktop close the game automatically, flush Wine state, verify save backups and then destroy the rig. Failed shutdown or backup verification retains the rig.
+- Activity logs show timestamps, stages, severity colors and readable error codes. Repeated progress frames and console decoration are hidden; full bounded diagnostic logs remain available.
 
 - Includes the native Windows desktop, built from the same source commit as the WSL backend. Setup installs Microsoft WebView2 when missing and the Start-menu shortcut opens the app. The CLI remains available through `vastgame`.
 - Home combines cover-art game browsing, selectable rigs, game details and launch controls. The standalone Hosts and Library tabs and title-bar status pills are removed.

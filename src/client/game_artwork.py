@@ -101,6 +101,15 @@ def artwork(appid, kind, cache):
 if __name__ == '__main__':
     try:
         cache = Path(os.environ.get('XDG_CACHE_HOME', str(Path.home()/'.cache'))) / 'vastgame/artwork'
-        print(json.dumps(artwork(sys.argv[1], sys.argv[2], cache)))
+        if sys.argv[1] == '--game':
+            if sys.argv[3] not in ('cover', 'banner'):
+                raise ValueError('Invalid artwork kind')
+            from game_identity import for_game
+            catalog = Path(os.environ.get('XDG_CONFIG_HOME', Path.home()/'.config'))/'vastgame/games'
+            identity = for_game(sys.argv[2], catalog)
+            result = artwork(identity['steam_appid'], sys.argv[3], cache) if identity['steam_appid'] else {'image': None}
+            print(json.dumps(dict(result, identity=identity)))
+        else:
+            print(json.dumps(artwork(sys.argv[1], sys.argv[2], cache)))
     except (OSError, ValueError, IndexError):
         print(json.dumps({'image': None}))
