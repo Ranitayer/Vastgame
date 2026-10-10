@@ -200,7 +200,7 @@ breakdown="$(
     jq -r '
         .['"$idx"']._vg
         |
-        "TARGET \(.gpu)/35  VALUE \(.cost)/20  ROUTE \(.alg)/15  REL \(.rel)/10  RESTORE \(.net)/10  VRAM \(.vram)/5  CPU \(.cpu)/5  HISTORY \(.hist)"
+        "TARGET \(.gpu)/35  VALUE \(.cost)/20  REGION \(.proximity)/15  GPU PREFERENCE \(.preference)/5  REL \(.rel)/10  RESTORE \(.net)/10  VRAM \(.vram)/5  CPU \(.cpu)/5  HISTORY \(.hist)"
     ' "$sorted"
 )"
 

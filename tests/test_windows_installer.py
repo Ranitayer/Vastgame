@@ -101,6 +101,7 @@ class WindowsUpdateTests(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(archive.read('Vastgame/'+name)).hexdigest(),digest)
                 with tarfile.open(fileobj=io.BytesIO(archive.read('Vastgame/backend.tar.gz'))) as backend:
                     self.assertIn('src/client/ludusavi.json.gz', backend.getnames())
+                    self.assertIn('src/client/countries.json', backend.getnames())
                     self.assertIn('src/client/LUDUSAVI-LICENSE', backend.getnames())
                     self.assertIn('src/providers/vast/rank.jq', backend.getnames())
 

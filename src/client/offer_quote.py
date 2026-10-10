@@ -42,13 +42,13 @@ def validate(offer, disk, approved=None):
     return dict(offer_id=offer['id'], machine_id=offer.get('machine_id'), price=price, disk_gb=disk)
 
 
-def fetch(offer_id, disk, machine_id=0):
+def fetch_offers(disk, machine_id=0, timeout=60):
     # The bundles endpoint's id filter does not match its returned ask IDs.
     # Preserve the rentable single-GPU VM query, then match the returned ID locally.
     query = 'num_gpus=1 verified=any rentable=true vms_enabled=true'
     if machine_id: query += f' machine_id={machine_id}'
     try:
-        result = subprocess.run(['vastai', 'search', 'offers', query, '--storage', str(disk), '--limit', '10000', '--order', 'dph_total', '--raw'], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['vastai', 'search', 'offers', query, '--storage', str(disk), '--limit', '10000', '--order', 'dph_total', '--raw'], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise OfferError('API_TIMEOUT', 'Vast offer lookup timed out. Retry; no VM rented')
     except OSError:
@@ -63,6 +63,11 @@ def fetch(offer_id, disk, machine_id=0):
         raise OfferError('RESPONSE_INVALID', 'Vast returned invalid offer data. Retry')
     if not isinstance(offers, list) or len(result.stdout) > 16*1024*1024:
         raise OfferError('RESPONSE_INVALID', 'Vast returned invalid offer data. Retry')
+    return offers
+
+
+def fetch(offer_id, disk, machine_id=0):
+    offers = fetch_offers(disk, machine_id)
     matches = [offer for offer in offers if isinstance(offer, dict) and offer.get('id') == offer_id]
     if len(matches) != 1:
         if len(offers) >= 10000:

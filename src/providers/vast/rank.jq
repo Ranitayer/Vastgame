@@ -65,56 +65,24 @@ include "eligibility";
         end
     ;
 
-    # --------------------------------------------------------
-    # Algeria proximity prior: 0..15
-    #
-    # This is deliberately only 15% of the score.
-    # Real local RTT/loss/jitter overrides it after VM creation.
-    # --------------------------------------------------------
-
-    def alg_pts:
-
-        ((.geolocation // "") | ascii_upcase) as $g
-
-        |
-
-        if   ($g | test("(,|_| )ES$")) then 15.0
-        elif ($g | test("(,|_| )FR$")) then 14.5
-        elif ($g | test("(,|_| )IT$")) then 14.0
-
-        elif ($g | test("(,|_| )PT$")) then 13.0
-        elif ($g | test("(,|_| )CH$")) then 12.5
-        elif ($g | test("(,|_| )BE$")) then 11.5
-
-        elif ($g | test("(,|_| )DE$")) then 11.0
-        elif ($g | test("(,|_| )NL$")) then 10.5
-        elif ($g | test("(,|_| )LU$")) then 10.5
-        elif ($g | test("(,|_| )AT$")) then 10.0
-
-        elif ($g | test("(,|_| )GR$")) then 9.5
-        elif ($g | test("(,|_| )SI$")) then 9.5
-        elif ($g | test("(,|_| )HR$")) then 9.0
-        elif ($g | test("(,|_| )GB$")) then 8.5
-
-        elif ($g | test("(,|_| )IE$")) then 8.0
-        elif ($g | test("(,|_| )CZ$")) then 8.0
-        elif ($g | test("(,|_| )HU$")) then 7.5
-        elif ($g | test("(,|_| )SK$")) then 7.5
-        elif ($g | test("(,|_| )RO$")) then 7.0
-
-        elif ($g | test("(,|_| )DK$")) then 7.0
-        elif ($g | test("(,|_| )PL$")) then 6.5
-        elif ($g | test("(,|_| )BG$")) then 6.5
-        elif ($g | test("(,|_| )CY$")) then 6.0
-
-        elif ($g | test("(,|_| )SE$")) then 5.0
-        elif ($g | test("(,|_| )NO$")) then 4.5
-        elif ($g | test("(,|_| )FI$")) then 4.0
-        elif ($g | test("(,|_| )(EE|LV|LT)$")) then 4.0
-        elif ($g | test("(,|_| )IS$")) then 2.5
-
-        else 6.0
-        end
+    # Country points are geographic estimates from bundled public-domain locations.
+    def preferences: ($ARGS.named.host_preferences // {});
+    def proximity_pts:
+        ((.geolocation // "") | ascii_upcase | capture("(?<code>[A-Z]{2})$")?.code // "") as $code |
+        (preferences.country_points[$code] // 6)
+    ;
+    def preferred_gpu_pts:
+        (preferences.preferred_gpu // "" | ascii_upcase | gsub("[_-]"; " ")) as $preferred |
+        if $preferred != "" and ((.gpu_name // "") | ascii_upcase | gsub("[_-]"; " ")) == $preferred
+        then 5 else 0 end
+    ;
+    def matches_preferences:
+        preferences as $p |
+        (($p.verified_only // false) == false or .verified == true or (.verification // "" | tostring | ascii_downcase) == "verified") and
+        ((.inet_down // 0) >= ($p.min_download_mbps // 0)) and
+        ((.inet_up // 0) >= ($p.min_upload_mbps // 0)) and
+        ((.gpu_ram // 0) >= (($p.min_vram_gb // 0) * 1024)) and
+        ((.cpu_ram // 0) >= (($p.min_ram_gb // 0) * 1024))
     ;
 
     # --------------------------------------------------------
@@ -288,7 +256,7 @@ include "eligibility";
 
     |
 
-    map(select((.dph_total // 999) <= $cap and compatibility_error == null))
+    map(select((.dph_total // 999) <= $cap and compatibility_error == null and matches_preferences))
 
     |
 
@@ -297,7 +265,9 @@ include "eligibility";
         |
         ($game.fit * 35) as $gpu
         |
-        alg_pts as $alg
+        proximity_pts as $proximity
+        |
+        preferred_gpu_pts as $preferred
         |
         (net_pts($history) * 10 / 12) as $net
         |
@@ -315,7 +285,8 @@ include "eligibility";
 
         (
             $gpu
-            + $alg
+            + $proximity
+            + $preferred
             + $net
             + $rel
             + $vram
@@ -344,7 +315,8 @@ include "eligibility";
                 tier: tier($score),
 
                 gpu: ($gpu | r1),
-                alg: ($alg | r1),
+                proximity: ($proximity | r1),
+                preference: $preferred,
                 net: ($net | r1),
                 restore_mbps: restore_rate($history),
                 rel: ($rel | r1),
@@ -363,7 +335,7 @@ include "eligibility";
             -._vg.score,
             (.dph_total // 999),
             -._vg.gpu,
-            -._vg.alg,
+            -._vg.proximity,
             -._vg.rel,
             -._vg.restore_mbps,
             -(.disk_bw // 0),

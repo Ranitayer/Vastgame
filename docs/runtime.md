@@ -34,7 +34,10 @@ destroying the VM. `vastgame stop` performs that final backup, verifies the
 receipt against the selected instance/game, then requests destruction and
 waits for account listing confirmation. Failures retain management identity
 and avoid a false billing-stopped message. `vastgame restore <id>` requires an
-idle game and verifies every object/member before changing live files.
+idle game and verifies every object/member before changing live files. Save and
+shader writes use unique private temporary files, ownership through the open
+descriptor and atomic replacement. Each file replacement is atomic; a disk
+failure midway through a multi-file restore still requires retry/recovery.
 
 Snapshots use `state/<id>/snapshots/<timestamp-uuid>/COMMITTED.json`; objects
 are per-game content-addressed archives. Shader state keys include actual

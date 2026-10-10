@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Preserve the old force spelling as an alias; all launches use the same checks.
-if [[ "${1:-}" == "force" ]]; then shift; fi
-
 MAX_PRICE="0.70"
 MAX_RESULTS=15
 DISK_GB=250

@@ -1,18 +1,28 @@
 :root {
   color-scheme: dark;
   --surface: #151d28;
+  --surface-dark: #10141f;
   --surface-hover: #202e37;
   --surface-active: #394a50;
   --accent: #884b2b;
   --price: #75a743;
+  --balance-low: #cf573c;
   --log-info: #73bed3;
   --log-success: #a8ca58;
   --log-warning: #e8c170;
   --log-error: #da863e;
+  --session-failed: #cf573c;
+  --action-blue: #3c5e8b;
+  --action-blue-hover: #253a5e;
+  --action-red: #a53030;
+  --action-red-hover: #602c2c;
+  --action-green: #25562e;
+  --action-green-hover: #19332d;
   --focus: #ebede9;
   --text: #ebede9;
   --text-muted: #a8b5b2;
   --page-margin: 24px;
+  --details-panel-width: calc((100% - var(--page-margin) * 2) * 1.02 / 3.175);
   --button-size: 40px;
   --button-duration: 180ms;
   --game-card-inset: 10px;
@@ -36,7 +46,7 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 }
 .shell.edge-to-edge { height: 100%; margin: 0; border-radius: 0; box-shadow: inset 0 0 0 0 var(--surface-hover); }
 .titlebar { display: grid; grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr); align-items: center; height: 56px; flex-shrink: 0; user-select: none; }
-.navigation { min-width: 0; }
+.navigation { min-width: 0; display: flex; align-items: center; gap: var(--page-margin); }
 .drag-region { height: 100%; display: flex; align-items: center; padding-left: var(--page-margin); min-width: 0; gap: 8px; }
 .drag-region span { font-size: 13px; font-weight: 600; letter-spacing: 0.025em; color: var(--text-muted); }
 .window-controls { display: flex; justify-content: flex-end; gap: 4px; padding-right: 10px; }

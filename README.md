@@ -7,7 +7,13 @@ Tailscale and Moonlight. One modular source tree serves Linux and Windows/WSL.
 
 The optional [desktop app](desktop/README.md) provides a native window, selectable host
 pills, an illustrated game library and explicit Play/shutdown controls. It uses
-Tauri 2, Svelte and the supplied palette. `vastgame hosts --json` supplies NVIDIA
+Tauri 2, Svelte and the supplied palette. Home combines games and hosts; Sessions
+shows durable history, logs/events and total session costs. Settings edits shared
+Moonlight/host preferences, with Save/Reset and confirmed sensitive actions.
+The title bar also shows available account credit. See the detailed
+[app architecture](desktop/ARCHITECTURE.md), [system architecture](docs/architecture.md)
+and [current review](docs/reviews/2026-10-10-project-review.md).
+`vastgame hosts --json` supplies NVIDIA
 VM offers using the same eligibility and scoring as CLI selection. Browsing spans
 all regions without the CLI launcher's price or 15-result cap.
 
@@ -167,11 +173,12 @@ Updates preserve an existing stream.json instead of overwriting your choices.
 | Folder | Owns |
 |---|---|
 | `bin/` | CLI entry point |
+| `desktop/` | Native app, shared UI controls, one rig controller and fixed Tauri IPC |
 | `src/manager/` | Catalog, lifecycle, host selection, networking, progress, persistence and client coordination |
-| `src/providers/vast/` | Offer scoring, including recent measured delivery and restore performance |
+| `src/providers/vast/` | Shared offer eligibility/scoring, public host summaries, account credit and charges |
 | `src/bootstrap/` | VM preflight, packed transport and setup |
 | `src/runtime/` | Verified restore, Proton preparation, Lutris launch, telemetry and game state |
-| `src/client/` | Save discovery, immutable package publication, Linux HUD and Crashpad |
+| `src/client/` | Quotes, jobs, session ledger, preferences, artwork/identity, save discovery, publication and Linux overlays |
 | `packaging/windows/` | Installer source and native Windows/WSL bridge |
 | `scripts/` | Linux installation and private Core VM template management |
 | `tests/` | Regression tests; no rental required |
@@ -186,7 +193,8 @@ installer releases do not receive these source changes automatically.
 
 - Lifecycle operations and catalog writers have separate locks. Ingestion can
   overlap VM startup/connect/stop; catalog edits, packaging and removal cannot
-  overlap an import. An existing Vastgame VM blocks another rental. Game removal
+  overlap an import. An observed existing Vastgame VM blocks another rental.
+  Locks are local; different PCs sharing the same account can race that check. Game removal
   requires no Vastgame VMs in the account.
 - Connections verify the selected contract ID and its unique launch label;
   peer names alone never select a streaming host.

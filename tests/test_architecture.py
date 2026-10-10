@@ -61,6 +61,7 @@ class ArchitectureTests(unittest.TestCase):
                 result=subprocess.run([str(ROOT/'bin/vastgame'),*args],env=env,capture_output=True,text=True)
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertNotIn('unexpected-network-command',result.stderr)
+            self.assertFalse((home/'.local/state/vastgame/sessions').exists(), 'Non-lifecycle force aliases must not create session history')
             self.assertEqual((home/'.local/state/vastgame/selected_game').read_text().strip(),'fixture')
             for args in (['list'],['game','list']):
                 result=subprocess.run([str(ROOT/'bin/vastgame'),*args],env=env,capture_output=True,text=True)

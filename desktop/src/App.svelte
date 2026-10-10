@@ -5,7 +5,11 @@
   import Button from './components/Button.svelte';
   import type { Host } from './hosts/types';
   import TabBar from './components/TabBar.svelte';
+  import BalancePill from './account/BalancePill.svelte';
   import HomePage from './home/HomePage.svelte';
+  import SessionsPage from './sessions/SessionsPage.svelte';
+  import SettingsPage from './settings/SettingsPage.svelte';
+  import { preferences } from './settings/preferences.svelte';
   import { hosts } from './hosts/catalog.svelte';
   import { tabs, type TabId } from './navigation';
 
@@ -14,6 +18,9 @@
   let edgeToEdge = $state(false);
   let selectedRig = $state<Host | null>(null);
   let activeTab = $state<TabId>('home');
+  let settingsSave = $state<(() => Promise<void>) | undefined>();
+  let settingsReset = $state<(() => Promise<void>) | undefined>();
+  let settingsSaved = $state(false);
   $effect(() => { if (hosts.catalog && selectedRig) selectedRig = hosts.catalog.offers.find(host => host.id === selectedRig?.id) ?? null; });
 
   onMount(() => {
@@ -58,7 +65,7 @@
     <div class="drag-region" data-tauri-drag-region>
       <span class="brand" data-tauri-drag-region>Vastgame</span>
     </div>
-    <div class="navigation"><TabBar bind:active={activeTab} /></div>
+    <div class="navigation"><BalancePill/><div class="tabs-and-save"><TabBar bind:active={activeTab} />{#if activeTab === 'settings'}<Button disabled={!settingsSave || preferences.saving || settingsSaved} aria-label={settingsSaved ? 'Settings saved' : 'Save all settings'} onclick={() => void settingsSave?.()}>{preferences.saving ? 'Saving…' : settingsSaved ? 'Saved' : 'Save'}</Button><Button disabled={!settingsReset || preferences.saving} aria-label="Reset all settings to defaults" onclick={() => void settingsReset?.()}>Reset</Button>{/if}</div></div>
     <div class="window-controls" aria-label="Window controls">
       <Button icon variant="plain" aria-label="Minimize" title="Minimize" onclick={() => control('minimize')}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
@@ -81,11 +88,12 @@
         aria-labelledby={`tab-${tab.id}`}
         hidden={activeTab !== tab.id}
         tabindex="0"
-      >{#if tab.id === 'home'}<HomePage active={activeTab === 'home'} bind:selectedRig/>{/if}</div>
+      >{#if tab.id === 'home'}<HomePage active={activeTab === 'home'} bind:selectedRig/>{:else if tab.id === 'sessions'}<SessionsPage active={activeTab === 'sessions'}/>{:else if tab.id === 'settings'}<SettingsPage active={activeTab === 'settings'} bind:save={settingsSave} bind:reset={settingsReset} bind:saved={settingsSaved}/>{/if}</div>
     {/each}
   </main>
 </div>
 
 <style>
   .brand { flex-shrink: 0; }
+  .tabs-and-save { display: flex; align-items: center; gap: 4px; min-width: 0; }
 </style>

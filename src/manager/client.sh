@@ -396,7 +396,7 @@ launch_moonlight() {
 
 # Shared by CLI selection and the read-only desktop catalog; no browsing caps leak into value scoring.
 rank_host_offers() {
-    local input="$1" cap="$2" count="$3" settings resolution fps
+    local input="$1" cap="$2" count="$3" settings resolution fps preferences
     settings="$(read_stream_settings)" || return 1
     resolution="$(jq -r '.resolution' <<< "$settings")"
     fps="$(jq -r '.fps' <<< "$settings")"
@@ -410,7 +410,8 @@ rank_host_offers() {
         fps="$(native_screen_refresh)"
     fi
     settings="$(python3 "$CLIENT_DIR/stream_settings.py" resolve "$(stream_settings_file)" "${VASTGAME_WINDOWS:-0}" "$resolution" "$fps")" || return 1
-    jq --argjson max "$count" --argjson cap "$cap" --argjson value_cap "$MAX_PRICE" \
+    preferences="$(python3 "$CLIENT_DIR/desktop_settings.py" rank)" || return 1
+    jq --argjson max "$count" --argjson cap "$cap" --argjson value_cap "$MAX_PRICE" --argjson host_preferences "$preferences" \
         --arg selected_game "${4-$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)}" \
         --arg native_resolution "$(jq -r .resolution <<< "$settings")" \
         --argjson native_fps "$(jq -r .fps <<< "$settings")" \

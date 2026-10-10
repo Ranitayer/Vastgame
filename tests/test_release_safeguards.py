@@ -86,6 +86,7 @@ get_vast_ip 123
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp)/'instance'; file.write_text('123')
             result = self.shell(f'''source "{ROOT}/src/manager/provider.sh"
+session_event() {{ :; }}
 INSTANCE_FILE="{file}"
 instance_json() {{ echo '{{"id":123,"label":"vastgame-123"}}'; }}
 vastai() {{ if [[ "$1" == show ]]; then echo '[{{"id":123}}]'; fi; }}

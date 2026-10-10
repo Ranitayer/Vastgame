@@ -10,6 +10,8 @@ bash -n "$BOOTSTRAP_FILE" ||
 
 label="${VASTGAME_LAUNCH_LABEL:-vastgame-$(date +%s%N)}"
 [[ "$label" =~ ^vastgame-[0-9]+$ ]] || die "Invalid unique launch label"
+session_event begin "$label" <<<"$(jq -cn --arg game "$(cat "$SELECTED_GAME_FILE" 2>/dev/null || true)" '{game:$game}')"
+session_event offer "$label" <<<"$(jq -cn --slurpfile offers "$sorted" --argjson idx "$idx" --argjson disk "$DISK_GB" '{offer:$offers[0][$idx],disk_gb:$disk}')"
 
 
 echo
@@ -54,6 +56,7 @@ if (( packed_bytes > 15360 )); then
 fi
 
 if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then printf '[VASTGAME_CREATE_REQUESTED]\n'; fi
+session_event requested "$label" </dev/null
 set +e
 
 create_out="$(
@@ -185,6 +188,7 @@ if [[ -z "$instance_id" ]]; then
 fi
 
 printf '%s\n' "$instance_id" > "$INSTANCE_FILE"
+session_event attach <<<"$(jq -c --arg id "$instance_id" --arg label "$label" '.[] | select((.id|tostring) == $id and .label == $label)' <<<"$instances")"
 
 trap '
     progress_stop_animation

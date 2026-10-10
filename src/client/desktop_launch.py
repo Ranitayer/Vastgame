@@ -15,6 +15,7 @@ import urllib.request
 import ipaddress
 from failure_report import redact, json_write
 from startup_progress import milestone
+import session_history
 
 ROOT = Path(__file__).resolve().parents[2]
 BIN = ROOT / 'bin/vastgame'
@@ -63,9 +64,21 @@ def update_job(folder, **changes):
         fcntl.flock(lock, fcntl.LOCK_EX)
         path = folder / 'job.json'
         record = json.loads(path.read_text())
+        if record.get('force_shutdown') and not changes.get('force_shutdown') and not changes.get('stopped'):
+            # A canceled creation may still return its rental ID; preserve identity, never revive its state.
+            identity = {}
+            if changes.get('creation_requested') is True: identity['creation_requested'] = True
+            instance = changes.get('instance_id')
+            if record.get('instance_id') is None and isinstance(instance, str) and re.fullmatch(r'[0-9]+', instance): identity['instance_id'] = instance
+            changes = dict(identity, force_shutdown=True) if identity else {}
         if not record.get('stopped') and (not record.get('force_shutdown') or changes.get('force_shutdown') or changes.get('stopped')):
+            if changes.get('stopped'): changes.setdefault('ended_at', int(time.time() * 1000))
             record.update(changes)
             json_write(path, record)
+        try:
+            session_history.archive_job(path)
+            session_history.job_update(record)
+        except (OSError, ValueError, TypeError): emit('log', line='Warning: session history could not be saved; rig operation continues.')
         return record
 
 
@@ -87,7 +100,9 @@ def run(args, folder, record=None):
                                             VASTGAME_LAUNCH_LABEL=record['label'] if record else ''))
         if record is not None:
             record.update(update_job(folder, engine_pid=process.pid, engine_birth=birth(process.pid)))
-        superseded = args[0] == 'stop' and '--force' not in args and json.loads((folder/'job.json').read_text()).get('force_shutdown')
+        latest = json.loads((folder/'job.json').read_text())
+        superseded = ((args[0] == 'stop' and '--force' not in args and latest.get('force_shutdown')) or
+                      (args[0] in ('start', 'connect') and (latest.get('force_shutdown') or latest.get('stopped'))))
         if interrupted or superseded: interrupt(None, None)
     except BaseException:
         if process is not None: interrupt(None, None)
@@ -99,8 +114,10 @@ def run(args, folder, record=None):
     secret = False
     last_phase = ''
     log = folder / 'events.jsonl'
+    history = session_history.LogWriter(json.loads((folder/'job.json').read_text()).get('label'), phase)
+    history_failed = False
     def output(raw):
-        nonlocal secret, last_phase
+        nonlocal secret, last_phase, history_failed
         global last_error
         line = ANSI.sub('', raw.decode(errors='replace')).rstrip()
         if not line.strip():
@@ -138,7 +155,13 @@ def run(args, folder, record=None):
         elif secret:
             if '-----END ' in line and 'PRIVATE KEY-----' in line: secret = False
             return
-        line = redact(line).replace(str(Path.home()), '~')[:4096]
+        line = redact(line).replace(str(Path.home()), '~')
+        if not history_failed:
+            try: history.append(line)
+            except (OSError, ValueError, TypeError):
+                history_failed = True
+                emit('log', line='Warning: session logs could not be archived; rig operation continues.')
+        line = line[:4096]
         entry = dict(type='log', line=line, time=int(time.time() * 1000))
         if log.exists() and log.stat().st_size >= 2 * 1024 * 1024:
             log.replace(folder / 'previous.jsonl')
@@ -178,19 +201,25 @@ def run(args, folder, record=None):
         process.stdout.close()
 
 
-def launch(job, game, offer, price, machine="0"):
+def launch(job, game, offer, price, machine="0", started_ms=None):
     if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', game) or not offer.isdecimal() or int(offer) <= 0:
         raise ValueError('Invalid game or selected rig')
     if not machine.isdecimal(): raise ValueError('Invalid machine ID')
     ceiling = float(price)
     if not math.isfinite(ceiling) or ceiling < 0:
         raise ValueError('Invalid selected price')
+    now = int(time.time() * 1000)
+    started = now if started_ms is None else int(started_ms)
+    if started <= 0 or started > now + 60000:
+        raise ValueError('Invalid session start time')
     folder = STATE / job
     folder.mkdir(parents=True, exist_ok=False, mode=0o700)
     prune_jobs()
     record = dict(job=job, game=game, pid=os.getpid(), birth=birth(os.getpid()), instance_id=None,
-                  label='vastgame-' + str(time.time_ns()), creation_requested=False, game_requested=False)
+                  label=session_history.new_label(), creation_requested=False, game_requested=False, started_at=started)
     json_write(folder / 'job.json', record)
+    try: session_history.begin(record['label'], game, started, job)
+    except (OSError, ValueError, TypeError): emit('log', line='Warning: session history could not be saved; rig operation continues.')
     emit('status', phase='Checking selected rig')
     code, interrupted = run(['start', game, '--offer-id', str(int(offer)), '--machine-id', machine, '--max-price', format(ceiling, '.12f'), '--yes'], folder, record)
     if record.get('creation_requested') and record.get('instance_id') is None:
@@ -234,6 +263,7 @@ def stop(job, force=False):
             emit('finished', ok=False, phase='Shutdown superseded by force request', instance_id=instance)
             return
     interrupt_worker(record, job)
+    interrupt_worker(record, job, mode='connect')
     emit('status', phase='Shutting down rig' if force else 'Checking rig')
     args = ['stop', '--force', '--instance-id', instance, '--label', label] if force else ['stop', '--instance-id', instance, '--label', label, '--startup-job', job]
     code, _ = run(args, folder)
@@ -256,8 +286,14 @@ def connect(job):
         raise ValueError('Force shutdown unconfirmed. Retry X before connecting')
     if not record.get('finished') or alive(record) or alive(record, True):
         raise ValueError('Wait for the current rig operation to finish before connecting')
-    code, _ = run(['connect', '--instance-id', instance, '--label', label], folder, record)
-    record = update_job(folder, finished=True, success=code == 0, phase='Game running' if code == 0 else 'Connection failed; VM retained')
+    record = update_job(folder, pid=os.getpid(), birth=birth(os.getpid()), finished=False)
+    if record.get('force_shutdown') or record.get('stopped'):
+        raise ValueError('Shutdown superseded reconnect')
+    code = 1
+    try:
+        code, _ = run(['connect', '--instance-id', instance, '--label', label], folder, record)
+    finally:
+        record = update_job(folder, finished=True, success=code == 0, phase='Game running' if code == 0 else 'Connection failed; VM retained')
     emit('finished', ok=code == 0, phase=record['phase'], instance_id=record.get('instance_id'), game_running=bool(record.get('game_running')))
 
 
@@ -348,7 +384,9 @@ def prune_jobs():
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 record = json.loads((folder/'job.json').read_text())
                 if not isinstance(record, dict): continue
-                if record.get('stopped') and not alive(record) and not alive(record, True): shutil.rmtree(folder)
+                if record.get('stopped') and not alive(record) and not alive(record, True):
+                    session_history.archive_job(folder/'job.json')
+                    shutil.rmtree(folder)
         except (OSError, ValueError, TypeError): pass
 
 
@@ -378,7 +416,7 @@ def guest_state(record):
     return None
 
 
-def current(job=None):
+def current(job=None, rows=None):
     from game_catalog import library_summary
     config = Path(os.environ.get('XDG_CONFIG_HOME', Path.home()/'.config'))/'vastgame'
     prune_jobs()
@@ -387,12 +425,8 @@ def current(job=None):
     if not paths: return None
     try: games = library_summary(config/'games', STATE.parent/'selected_game')['games']
     except (OSError, ValueError, TypeError): games = []
-    try:
-        lookup = subprocess.run(['vastai', 'show', 'instances', '--raw'], capture_output=True, text=True, timeout=15)
-        rows = json.loads(lookup.stdout) if lookup.returncode == 0 else None
-        if not isinstance(rows, list): raise ValueError('Provider instance lookup failed')
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise ValueError('Cannot verify retained rentals. Refresh status before starting another rig') from exc
+    if rows is None:
+        rows = instance_rows()
     for path in sorted(paths, key=lambda path: path.stat().st_mtime, reverse=True):
         try:
             record = json.loads(path.read_text())
@@ -427,10 +461,22 @@ def current(job=None):
             if json.loads(path.read_text()).get('stopped'): continue
             game = next((game for game in games if game['id'] == gid), None)
             return dict(jobId=jid, gameId=gid, gameName=game['name'] if game else 'Game', instanceId=instance,
+                        startedAt=record.get('started_at', int(label[9:]) // 1000000 if len(label[9:]) >= 18 else 0), endedAt=record.get('ended_at', 0),
                         phase=phase_name, status=status, shutdownRequested=bool(record.get('shutdown_requested')), gameRunning=running, stateFresh=observed is not None,
                         progress=record.get('progress'), observedAt=time.time() * 1000 if observed else record.get('game_observed_at', 0) * 1000)
         except (OSError, TypeError, KeyError, json.JSONDecodeError): continue
     return None
+
+
+def instance_rows():
+    try:
+        lookup = subprocess.run(['vastai', 'show', 'instances', '--raw'], capture_output=True, text=True, timeout=15)
+        if lookup.returncode or len(lookup.stdout) > 8*1024*1024: raise ValueError('Provider instance lookup failed')
+        rows = json.loads(lookup.stdout)
+        if not isinstance(rows, list): raise ValueError('Provider instance lookup failed')
+        return rows
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise ValueError('Cannot verify retained rentals. Refresh status before starting another rig') from exc
 
 
 if __name__ == '__main__':
@@ -445,7 +491,7 @@ if __name__ == '__main__':
         if not re.fullmatch(r'[a-f0-9]{32}', job):
             raise ValueError('Invalid launch identity')
         STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if mode == 'launch' and len(args) == 4: launch(job, *args)
+        if mode == 'launch' and len(args) in (4, 5): launch(job, *args)
         elif mode == 'stop' and (not args or args == ['--force']): stop(job, force=bool(args))
         elif mode == 'connect' and not args: connect(job)
         elif mode == 'watch' and not args: watch(job)

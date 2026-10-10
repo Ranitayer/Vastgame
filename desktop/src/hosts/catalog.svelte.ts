@@ -7,6 +7,7 @@ let requested: string | null = null;
 let revision = 0;
 let queued: { game: string; revision: number } | null = null;
 let worker: Promise<void> | undefined;
+export function invalidateHosts() { requested = null; revision++; queued = null; }
 
 export function ensureHosts(game = '') { if (requested !== game) return refreshHosts(game); return worker; }
 export function refreshHosts(game = ''): Promise<void> {

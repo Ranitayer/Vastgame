@@ -15,6 +15,8 @@ connect_game() {
     fi
 
     printf '%s\n' "$id" > "$INSTANCE_FILE"
+    if [[ -z "${info:-}" ]]; then info="$(instance_json "$id" 2>/dev/null || true)"; fi
+    [[ -z "${info:-}" ]] || session_event attach <<<"$info"
 
     # A reachable peer is not proof that game/runtime/save preparation finished.
     wait_for_gaming "$id"
@@ -74,6 +76,10 @@ VM lifecycle:
   vastgame cleanup                  Preview expired, inactive local artifacts
   vastgame cleanup --apply          Remove previewed artifacts; preserve saves and releases
   vastgame update                   Install the latest Windows release; keep accounts/settings
+  vastgame balance --json           Read available Vast account credit in USD
+  vastgame sessions [--json]        Read local session history (no network request)
+    show ID | logs ID | refresh ID  Inspect a session, read its logs, or refresh Vast charges
+    --limit <1-200> --offset <N>     Page through history (default 50)
 
 Stream settings apply on reconnect. The running game's virtual display follows
 the selected resolution; some games need restarting to refresh available modes.
@@ -175,8 +181,17 @@ case "$command" in
         ;;
 esac
 case "$command" in
+    sessions)
+        if [[ "$#" == 0 || "${1:-}" == --* ]]; then set -- list "$@"; fi
+        case "$1" in list|show|logs|log-page|event-page|refresh) ;; *) die "Usage: vastgame sessions [show|logs|refresh ID] [--json]" ;; esac
+        exec python3 "$CLIENT_DIR/session_history.py" "$@"
+        ;;
+    balance)
+        [[ "$#" == 1 && "$1" == --json ]] || die "Usage: vastgame balance --json"
+        exec python3 "$APP_ROOT/src/providers/vast/account.py"
+        ;;
     desktop-launch)
-        [[ "$#" == 5 ]] || die "Invalid desktop launch request"
+        [[ "$#" == 5 || "$#" == 6 ]] || die "Invalid desktop launch request"
         exec python3 "$CLIENT_DIR/desktop_launch.py" launch "$@"
         ;;
     desktop-watch)
@@ -194,6 +209,10 @@ case "$command" in
     desktop-connect)
         [[ "$#" == 1 ]] || die "Invalid desktop connection request"
         exec python3 "$CLIENT_DIR/desktop_launch.py" connect "$@"
+        ;;
+    desktop-history-prepare)
+        [[ ( "$#" == 1 || ( "$#" == 2 && "$2" == --shutdown ) ) && "$1" =~ ^vastgame-[0-9]{1,24}$ ]] || die "Invalid session identity"
+        exec python3 "$CLIENT_DIR/session_actions.py" "$@"
         ;;
     quote)
         [[ "$#" == 3 ]] && valid_game_id "$1" && [[ "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ ]] || die "Usage: vastgame quote GAME OFFER MACHINE"
@@ -247,6 +266,18 @@ case "$command" in
     restore) state_restore "${1:-}" ;;
     resume) state_resume "${1:-}" ;;
     setup) setup_template ;;
+    desktop-sensitive)
+        [[ "$#" == 1 && ( "$1" == force-stop || "$1" == delete-history ) ]] || die "Invalid sensitive action"
+        exec python3 "$CLIENT_DIR/sensitive_settings.py" "$1"
+        ;;
+    desktop-settings)
+        [[ "$#" == 0 || ( "$#" == 2 && "$1" == --patch ) || ( "$#" == 1 && "$1" == --reset ) ]] || die "Invalid settings request"
+        settings_args=(get --stream-path "$(stream_settings_file)")
+        if (( $# == 2 )); then settings_args=(save --stream-path "$(stream_settings_file)" --patch "$2"); fi
+        if [[ "${1:-}" == --reset ]]; then settings_args=(reset --stream-path "$(stream_settings_file)"); fi
+        [[ "${VASTGAME_WINDOWS:-0}" != 1 ]] || settings_args+=(--windows)
+        exec python3 "$CLIENT_DIR/desktop_settings.py" "${settings_args[@]}"
+        ;;
     streamedit) edit_stream_settings ;;
     stop)
         if (( $# == 0 )); then stop_game

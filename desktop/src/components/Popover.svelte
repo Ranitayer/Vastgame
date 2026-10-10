@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { fade } from 'svelte/transition';
-  let { open, anchor, label, onclose, children, menu = false, above = false }: { open: boolean; anchor: HTMLElement | undefined; label: string; onclose: () => void; children: Snippet; menu?: boolean; above?: boolean } = $props();
+  let { open, anchor, label, onclose, children, menu = false, above = false, persistent = false }: { open: boolean; anchor: HTMLElement | undefined; label: string; onclose: () => void; children: Snippet; menu?: boolean; above?: boolean; persistent?: boolean } = $props();
   const duration = globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 140;
-  $effect(() => { if (!open || menu) return; const timer = setTimeout(onclose, 2000); return () => clearTimeout(timer); });
+  $effect(() => { if (!open || menu || persistent) return; const timer = setTimeout(onclose, 2000); return () => clearTimeout(timer); });
   function place(node: HTMLDivElement) {
     document.body.appendChild(node);
     function position() {

@@ -9,7 +9,7 @@ fn identity(job: &str) -> bool {
     job.len() == 32 && job.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-fn stream(args: Vec<String>, events: Channel<Value>) -> Result<(), String> {
+pub(crate) fn stream(args: Vec<String>, events: Channel<Value>) -> Result<(), String> {
     let mut command = crate::backend::command(&args, false)?;
     let mut child = command.env("PYTHONUNBUFFERED", "1").stdin(Stdio::null())
         .stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
@@ -49,7 +49,7 @@ fn send_line(line: &[u8], events: &Channel<Value>, finished: &mut bool) {
 
 #[tauri::command]
 pub async fn launch_game(game_id: String, offer_id: u64, machine_id: u64, max_price: f64, job_id: String,
-    events: Channel<Value>, state: tauri::State<'_, LaunchState>) -> Result<(), String> {
+    started_at: Option<u64>, events: Channel<Value>, state: tauri::State<'_, LaunchState>) -> Result<(), String> {
     if !identity(&job_id) || !crate::backend::valid_game_id(&game_id) ||
         offer_id == 0 || !max_price.is_finite() || max_price < 0.0 {
         return Err("Invalid game or rig selection.".into());
@@ -60,7 +60,9 @@ pub async fn launch_game(game_id: String, offer_id: u64, machine_id: u64, max_pr
       *active = true;
     }
     let result = tauri::async_runtime::spawn_blocking(move || {
-        stream(vec!["desktop-launch".into(), job_id, game_id, offer_id.to_string(), max_price.to_string(), machine_id.to_string()], events)
+        let mut args = vec!["desktop-launch".into(), job_id, game_id, offer_id.to_string(), max_price.to_string(), machine_id.to_string()];
+        if let Some(started) = started_at { args.push(started.to_string()); }
+        stream(args, events)
     }).await;
     if let Ok(mut active) = busy.lock() { *active = false; }
     result.map_err(|_| "Launch worker could not finish.".to_string())?

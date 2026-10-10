@@ -61,7 +61,9 @@ pub async fn read(args: Vec<String>, collection: &'static str) -> Result<serde_j
         if data.get("error").is_some_and(|error| error.is_object()) { return Ok(data); }
         if !data.get(collection).is_some_and(|value| match collection {
             "image" => value.is_null() || value.is_string(),
+            "settings" => value.is_object(),
             "details" | "quote" | "session" => value.is_null() || value.is_object(),
+            "balance" => value.get("usd").and_then(|amount| amount.as_f64()).is_some_and(f64::is_finite),
             _ => value.is_array(),
         }) { return Err(format!("Backend {collection} response has an invalid format.")); }
         Ok(data)

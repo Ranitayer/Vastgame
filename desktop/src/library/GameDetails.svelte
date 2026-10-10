@@ -1,5 +1,6 @@
 <script lang="ts">
   import Notice from '../components/Notice.svelte';
+  import DetailsPanel from '../components/DetailsPanel.svelte';
   import { launch, play, connect } from '../session/launch.svelte';
   import type { Host } from '../hosts/types';
   import { library } from './catalog.svelte';
@@ -16,7 +17,6 @@
   let notice = $state('');
   let playAnchor = $state<HTMLDivElement>();
   const activeRig = $derived(!!launch.instanceId);
-  const connected = $derived(activeRig);
   $effect(() => { game.id; notice = ''; });
   $effect(() => { game.id; logsOpen = false; });
   async function requestPlay() { const id = game.id; notice = ''; const message = await play(game, selectedRig); if (game.id === id) notice = message; }
@@ -32,10 +32,10 @@
     return () => { current = false; };
   });
 </script>
-<aside class="details" aria-labelledby="game-title">
+<DetailsPanel labelledby="game-title">
   <div class="hero">
     <GameArtwork name={game.name} gameId={game.id} kind="banner"/><div class="fade"></div>
-    <div class="play" bind:this={playAnchor}><PlayButton name={activeRig ? launch.gameName : game.name} {connected} busy={(activeRig || launch.gameId === game.id) && (launch.busy || launch.connecting)} onclick={() => void (connected ? requestConnect() : requestPlay())}/>{#if activeRig}<ShutdownButton/>{/if}{#if notice}<Notice anchor={playAnchor} text={notice}/>{:else if launch.gameId === game.id && launch.status === 'error'}<Notice anchor={playAnchor} text={launch.error?.message || launch.phase} detail={launch.error ? `[${launch.error.code}] ${launch.error.message}` : launch.phase}/>{/if}</div>
+    <div class="play" bind:this={playAnchor}><PlayButton name={activeRig ? launch.gameName : game.name} connected={activeRig} busy={(activeRig || launch.gameId === game.id) && (launch.busy || launch.connecting)} onclick={() => void (activeRig ? requestConnect() : requestPlay())}/>{#if activeRig}<ShutdownButton/>{/if}{#if notice}<Notice anchor={playAnchor} text={notice}/>{:else if launch.gameId === game.id && launch.status === 'error'}<Notice anchor={playAnchor} text={launch.error?.message || launch.phase} detail={launch.error ? `[${launch.error.code}] ${launch.error.message}` : launch.phase}/>{/if}</div>
   </div>
     <div class="information">
       <div class="heading">
@@ -45,16 +45,15 @@
       {:else}<span>{loading ? 'Loading reviews…' : reviews ? 'No reviews yet' : 'Reviews unavailable'}</span>{/if}
     </div>
       </div>
-      <section class="description card" aria-label="About the game">
+      <section class="description panel-card" aria-label="About the game">
         <header class="about-heading"><h3>About</h3><span aria-label={`Download size: ${gameSize(game.download_bytes)}`} title="Download size">{gameSize(game.download_bytes)}</span></header>
         <p title={metadata?.description}>{metadata?.description || (loading ? 'Loading description…' : 'Description unavailable')}</p>
       </section>
     </div>
   <div class="log-footer"><GameLogs bind:open={logsOpen} lines={activeRig || launch.gameId === game.id ? launch.logs : []}/></div>
 
-</aside>
+</DetailsPanel>
 <style>
-  .details { position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column; border-radius: 24px; overflow: hidden; background: var(--surface-hover); container-type: size; }
   .hero { position: relative; flex: 0 0 auto; }
   .fade { position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 45%, var(--surface-hover) 100%); pointer-events: none; }
   .heading { display: flex; align-items: center; gap: var(--page-margin); min-width: 0; }
@@ -66,7 +65,6 @@
   .information { position: relative; flex: 0 0 auto; min-height: 0; padding: var(--page-margin) var(--page-margin) 0; display: flex; flex-direction: column; gap: var(--page-margin); }
   .log-footer { flex: 1; min-height: calc(var(--button-size) + var(--page-margin) * 3); padding: var(--page-margin); }
   h2 { margin: 0; font-size: 21px; font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-  .card { padding: var(--page-margin); border-radius: 16px; background: var(--surface); }
   .about-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--page-margin); margin-bottom: 8px; }
   .about-heading span { flex-shrink: 0; font-size: 12px; color: var(--text-muted); }
   h3 { margin: 0; font-size: 12px; font-weight: 600; }

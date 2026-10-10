@@ -14,6 +14,8 @@
   import { hostContinent } from '../hosts/continents';
   import PriceLimit from '../hosts/PriceLimit.svelte';
   import { launch, restoreLaunch } from '../session/launch.svelte';
+  import { refreshBalance } from '../account/balance.svelte';
+  import { preferences, ensurePreferences } from '../settings/preferences.svelte';
 
   let { active, selectedRig = $bindable<Host | null>(null) }: { active: boolean; selectedRig?: Host | null } = $props();
   let search = $state('');
@@ -32,9 +34,11 @@
   $effect(() => {
     if (!active) return;
     void ensureLibrary();
+    void ensurePreferences();
+    preferences.revision;
     const catalog = library.catalog;
     if (catalog && !catalog.games.some(item => item.id === selectedId)) selectedId = catalog.games.find(item => item.id === launch.gameId)?.id ?? catalog.games[0]?.id ?? '';
-    if (catalog) void ensureHosts(game?.id ?? '');
+    if (catalog && preferences.data) void ensureHosts(game?.id ?? '');
   });
   $effect(() => { search; visibleGames = 48; });
   $effect(() => { selectedId; expanded = null; });
@@ -45,7 +49,7 @@
   });
   $effect(() => { if (expanded !== null && !offers.some(host => host.id === expanded)) expanded = null; });
   async function refresh() {
-    await Promise.all([refreshLibrary(), restoreLaunch(true)]);
+    await Promise.all([refreshLibrary(), restoreLaunch(true), refreshBalance(true)]);
     await refreshHosts(game?.id ?? '');
   }
 </script>
@@ -65,8 +69,8 @@
   <section class="hosts-column" aria-label="Available rigs">
     <div class="host-filters"><Dropdown bind:value={gpu} options={gpus} label="GPU" placeholder="All GPUs"/><Dropdown bind:value={continent} options={continents} label="Continent" placeholder="All continents"/></div>
     <ScrollArea label="Home rigs">
-      {#if hosts.error}<p class="message" role="alert">{hosts.error}</p>{/if}
-      {#if !offers.length}<p class="message" role="status">{hosts.loading ? 'Finding available rigs…' : 'No matching rigs.'}</p>{/if}
+      {#if hosts.error || preferences.error}<p class="message" role="alert">{hosts.error || preferences.error}</p>{/if}
+      {#if !offers.length}<p class="message" role="status">{hosts.loading || preferences.loading ? 'Finding available rigs…' : 'No matching rigs.'}</p>{/if}
       <div class="rigs">{#each offers as host (host.id)}<HostPill {host} expanded={expanded === host.id} chosen={selectedRig?.id === host.id} ontoggle={() => expanded = expanded === host.id ? null : host.id} onchoose={() => selectedRig = selectedRig?.id === host.id ? null : host}/>{/each}</div>
     </ScrollArea>
     <div class="host-filters"><Dropdown bind:value={sort} options={hostSortOptions} label="Rank rigs" placeholder="Lowest price" up/><PriceLimit bind:limit {ceiling} disabled={hosts.loading}/></div>
@@ -78,7 +82,7 @@
 </div>
 {/if}
 <style>
-  .home { display: grid; grid-template-columns: minmax(0, 1.31248fr) minmax(0, 0.84252fr) minmax(0, 1.02fr); gap: var(--page-margin); height: 100%; min-height: 0; }
+  .home { display: grid; grid-template-columns: minmax(0, 1.31248fr) minmax(0, 0.84252fr) minmax(0, var(--details-panel-width)); gap: var(--page-margin); height: 100%; min-height: 0; }
   section { min-width: 0; min-height: 0; }
   .library-column { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--page-margin); }
   .search { display: flex; justify-content: center; min-width: 0; }

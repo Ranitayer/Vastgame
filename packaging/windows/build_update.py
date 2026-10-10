@@ -39,7 +39,7 @@ def build(output, version, commit=None, desktop=None):
     with gzip.GzipFile(fileobj=backend, mode='wb', mtime=0) as zipped, tarfile.open(fileobj=zipped, mode='w') as archive:
         for path in [PROJECT/'bin/vastgame', *sorted((PROJECT/'src').rglob('*'))]:
             if not path.is_file() or path.is_symlink() or not (path.suffix in ('.py', '.sh', '.cpp', '.h', '.jq') or
-                path.name in ('vastgame', 'ludusavi.json.gz', 'LUDUSAVI-LICENSE')):
+                path.name in ('vastgame', 'ludusavi.json.gz', 'LUDUSAVI-LICENSE', 'countries.json', 'COUNTRIES.md')):
                 continue
             content = path.read_bytes()
             member = tarfile.TarInfo(path.relative_to(PROJECT).as_posix())

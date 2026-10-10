@@ -69,10 +69,6 @@ def context_key(context):
     return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
 
 
-def cache_identity(m):
-    return context_key(cache_context(m))
-
-
 def roots(root, gid):
     return {base: Path(root) / folder / gid for base, folder in
             [('game', 'games'), ('prefix', 'prefixes'), ('saves', 'saves'), ('configs', 'configs'), ('shaders', 'shaders')]}
@@ -348,6 +344,20 @@ def unpack(artifact, archive_path, stage):
         raise ValueError('Missing state archive files')
 
 
+def replace_state_file(source, destination, owner=None):
+    # An existing predictable temp symlink must never redirect a privileged restore.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix='.vastgame-', delete=False) as output:
+            temporary = Path(output.name)
+            with source.open('rb') as incoming: shutil.copyfileobj(incoming, output)
+            if owner is not None: os.fchown(output.fileno(), owner.st_uid, owner.st_gid)
+            output.flush(); os.fsync(output.fileno())
+        temporary.replace(destination)
+    finally:
+        if temporary is not None: temporary.unlink(missing_ok=True)
+
+
 def restore(m, root, remote, cache_key, context=None, defer_shaders=False):
     record = latest(remote, m['id'])
     if not record:
@@ -406,15 +416,12 @@ def restore(m, root, remote, cache_key, context=None, defer_shaders=False):
             dest.parent.mkdir(parents=True, exist_ok=True)
             bases[base].mkdir(parents=True, exist_ok=True)
             owner = dest.stat() if dest.exists() else bases[base].stat()
-            temp = dest.with_name(dest.name + '.vastgame-tmp')
-            shutil.copyfile(p, temp); temp.chmod(0o600)
             if os.geteuid() == 0:
-                os.chown(temp, owner.st_uid, owner.st_gid)
                 parent = dest.parent
                 while parent != bases[base]:
                     os.chown(parent, owner.st_uid, owner.st_gid)
                     parent = parent.parent
-            temp.replace(dest)
+            replace_state_file(p, dest, owner if os.geteuid() == 0 else None)
         if deferred:
             artifact, pending = deferred
             target = Path(root) / 'profiles' / m['id'] / 'pending-shaders'
@@ -638,8 +645,7 @@ def prepare_shaders(gid):
         copies.append((src, dest))
     for src, dest in copies:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        temp = dest.with_name(dest.name + '.vastgame-tmp')
-        shutil.copyfile(src, temp); temp.chmod(0o600); temp.replace(dest)
+        replace_state_file(src, dest)
     shutil.rmtree(pending)
     print('Matching compiled shader cache restored before Wine launch', flush=True)
 

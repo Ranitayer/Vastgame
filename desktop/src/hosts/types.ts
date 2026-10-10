@@ -2,6 +2,7 @@ export interface Host {
   id: number;
   machine_id: number | null;
   score: number | null;
+  verification?: string;
   gpu_name: string;
   geolocation: string;
   dph_total: number;

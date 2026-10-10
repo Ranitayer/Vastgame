@@ -18,6 +18,63 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 class DesktopLaunchTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = patch.object(module.session_history, 'ROOT', Path(temporary.name)/'sessions')
+        root.start(); self.addCleanup(root.stop)
+        worker = patch.object(module.session_history, 'queue_refresh')
+        worker.start(); self.addCleanup(worker.stop)
+
+    def test_force_during_creation_preserves_late_identity_without_reviving_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            record = dict(job='a'*32, label='vastgame-123', game='fixture', force_shutdown=True,
+                          instance_id=None, phase='Shutting down rig', finished=False)
+            (folder/'job.json').write_text(json.dumps(record))
+            changed = module.update_job(folder, instance_id='42', creation_requested=True,
+                                        phase='Game running', success=True)
+            self.assertEqual(changed['instance_id'], '42')
+            self.assertTrue(changed['creation_requested'])
+            self.assertTrue(changed['force_shutdown'])
+            self.assertEqual(changed['phase'], 'Shutting down rig')
+            self.assertNotIn('success', changed)
+            stopped = module.update_job(folder, stopped=True, instance_id=None)
+            self.assertEqual(module.update_job(folder, instance_id='42', phase='Game running'), stopped)
+
+    def test_session_clock_persists_play_time_and_survives_failed_stop_and_connect(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); job = 'a' * 32; started = int(time.time() * 1000) - 12000
+            with patch.object(module, 'STATE', state), patch.object(module, 'prune_jobs'), patch.object(module, 'run', return_value=(1, False)), patch.object(module, 'emit'):
+                module.launch(job, 'fixture', '1', '0.2', '0', str(started))
+            folder = state / job
+            module.update_job(folder, instance_id='42', finished=True)
+            with patch.object(module, 'STATE', state), patch.object(module, 'run', return_value=(1, False)), patch.object(module, 'interrupt_worker'), patch.object(module, 'alive', return_value=False), patch.object(module, 'emit'):
+                module.stop(job)
+                module.connect(job)
+            record = json.loads((folder / 'job.json').read_text())
+            self.assertEqual(record['started_at'], started)
+            self.assertNotIn('ended_at', record)
+            with patch.object(module, 'STATE', state), patch('game_catalog.library_summary', return_value={'games': []}), patch.object(module, 'guest_state', return_value=None), patch.object(module.subprocess, 'run') as lookup:
+                lookup.return_value.returncode = 0
+                lookup.return_value.stdout = json.dumps([dict(id=42, label=record['label'])])
+                restored = module.current(job)
+            self.assertEqual(restored['startedAt'], started)
+            self.assertEqual(restored['endedAt'], 0)
+            with patch.object(module, 'STATE', state), patch.object(module, 'run', return_value=(0, False)), patch.object(module, 'interrupt_worker'), patch.object(module, 'emit'):
+                module.stop(job, force=True)
+            record = json.loads((folder / 'job.json').read_text())
+            self.assertTrue(record['stopped'])
+            self.assertGreaterEqual(record['ended_at'], started)
+            self.assertEqual(module.update_job(folder, ended_at=0), record)
+
+    def test_session_clock_rejects_invalid_time_before_creating_job(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(module, 'STATE', Path(temporary)), patch.object(module, 'run') as run:
+            for started in ('-1', '0', 'nan', str(int(time.time() * 1000) + 120000)):
+                with self.assertRaises(ValueError): module.launch('a' * 32, 'fixture', '1', '0.2', '0', started)
+            self.assertFalse(list(Path(temporary).iterdir()))
+            run.assert_not_called()
+
     def test_exact_connect_waits_for_guest_preparation_before_streaming(self):
         root = CLIENT.parents[1]
         source = (root/'src/manager/commands.sh').read_text()
@@ -25,6 +82,7 @@ class DesktopLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             code = r''' 
 instance_json() { printf '%s\n' '{"id":42,"label":"vastgame-123"}'; }
+session_event() { :; }
 wait_for_gaming() { printf 'WAIT_FOR_GAME_RUNTIME_SAVES %s\n' "$1"; }
 launch_moonlight() { echo STREAM_OPENED_TOO_EARLY; return 99; }
 get_vast_ip() { echo 100.76.110.5; }
@@ -228,6 +286,42 @@ die() { echo "$*" >&2; return 1; }
             self.assertEqual(record['instance_id'], '42')
             self.assertTrue(record['shutdown_requested'])
             self.assertEqual(record['phase'], 'Shutdown failed; VM retained')
+
+    def test_force_shutdown_interrupts_reconnect_and_late_completion_cannot_revive_rig(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); job = 'a'*32; folder = state/job; folder.mkdir()
+            path = folder/'job.json'
+            path.write_text(json.dumps(dict(job=job, instance_id='42', label='vastgame-123', finished=True)))
+            def run(args, current_folder, record=None):
+                if args[0] == 'connect':
+                    saved = json.loads(path.read_text())
+                    self.assertEqual(saved['pid'], os.getpid())
+                    self.assertFalse(saved['finished'])
+                    module.stop(job, force=True)
+                    return 1, True
+                self.assertEqual(args, ['stop', '--force', '--instance-id', '42', '--label', 'vastgame-123'])
+                return 0, False
+            with patch.object(module, 'STATE', state), patch.object(module, 'alive', return_value=False), \
+                 patch.object(module, 'interrupt_worker') as interrupt, patch.object(module, 'run', side_effect=run), patch.object(module, 'emit'):
+                module.connect(job)
+                interrupt.assert_any_call(ANY, job, mode='connect')
+            saved = json.loads(path.read_text())
+            self.assertTrue(saved['stopped'])
+            self.assertIsNone(saved['instance_id'])
+            self.assertEqual(saved['phase'], 'Rig shut down')
+
+    def test_reconnect_spawn_failure_finishes_operation_without_losing_vm_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); job = 'a'*32; folder = state/job; folder.mkdir()
+            path = folder/'job.json'
+            path.write_text(json.dumps(dict(job=job, instance_id='42', label='vastgame-123', finished=True)))
+            with patch.object(module, 'STATE', state), patch.object(module, 'alive', return_value=False), \
+                 patch.object(module, 'run', side_effect=OSError('Cannot spawn backend')):
+                with self.assertRaises(OSError): module.connect(job)
+            saved = json.loads(path.read_text())
+            self.assertTrue(saved['finished'])
+            self.assertFalse(saved['success'])
+            self.assertEqual(saved['instance_id'], '42')
 
     def test_force_worker_signal_pins_identity_and_rejects_pid_reuse_or_other_jobs(self):
         record = dict(stop_pid=12, stop_birth='expected')

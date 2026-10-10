@@ -24,18 +24,13 @@ def resolution(value):
     return value
 
 
-def read(path, windows=False):
+def validate(data, windows=False):
     config = dict(resolution='native', fps='native', bitrate_mbps=None,
                   video_codec='AV1' if windows else 'auto', video_decoder='auto',
                   display_mode='fullscreen', moonlight_options={})
-    path = Path(path)
-    if path.exists():
-        if path.stat().st_size > 65536:
-            raise ValueError('Stream settings file is too large')
-        data = json.loads(path.read_text(encoding='utf-8-sig'))
-        if not isinstance(data, dict) or set(data) - set(config):
-            raise ValueError('Unknown stream setting; use the documented stream.json keys')
-        config.update(data)
+    if not isinstance(data, dict) or set(data) - set(config):
+        raise ValueError('Unknown stream setting; use the documented stream.json keys')
+    config.update(data)
     if config['resolution'] != 'native':
         resolution(config['resolution'])
     fps = config['fps']
@@ -71,6 +66,15 @@ def read(path, windows=False):
         'capture-system-keys': 'never', 'performance-overlay': True, **options,
     }
     return config
+
+
+def read(path, windows=False):
+    path = Path(path)
+    if not path.exists():
+        return validate({}, windows)
+    if path.stat().st_size > 65536:
+        raise ValueError('Stream settings file is too large')
+    return validate(json.loads(path.read_text(encoding='utf-8-sig')), windows)
 
 
 def resolve(config, native_resolution, native_fps):

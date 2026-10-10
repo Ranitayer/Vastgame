@@ -2,6 +2,11 @@
 # HOST RESTORE HISTORY
 # ============================================================
 
+# Diagnostic bookkeeping never changes whether a paid lifecycle operation succeeds.
+session_event() {
+    python3 "$CLIENT_DIR/session_history.py" "$@" || warn "Session history could not be saved; rig operation continues."
+}
+
 record_restore_history() (
     local id="$1" metrics="$2" info machine label tmp
     jq -e '(.restore_mbps // 0) > 0 and (.machine_id // "") != "" and (.launch_label // "") != ""' \
@@ -26,4 +31,3 @@ record_restore_history() (
     fi
     rm -f "$tmp"
 )
-

@@ -32,7 +32,7 @@ def summarize(offers):
                       disk_name=str(offer.get('disk_name') or 'Not reported')[:160],
                       geolocation=str(offer.get('geolocation') or 'Not reported')[:100],
                       driver_version=str(offer.get('driver_version') or 'Not reported')[:40],
-                      verification=str(offer.get('verification') or 'Not reported')[:40],
+                      verification='verified' if offer.get('verified') is True else str(offer.get('verification') or 'Not reported')[:40],
                       dph_total=price)
         result[offer_id] = fields
     return sorted(result.values(), key=lambda h: (h['dph_total'], h['id']))

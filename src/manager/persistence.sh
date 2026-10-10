@@ -108,6 +108,8 @@ STATE_HELPER
         jq -e --arg instance "$id" --arg game "$gid"             '.schema == 1 and .instance_id == $instance and .game_id == $game and (.snapshot | length > 0)'             "$temp/receipt.json" >/dev/null || return 1
         mkdir -p "$STATEDIR/backups/$gid"
         cp "$temp/receipt.json" "$STATEDIR/backups/$gid/last-verified.json"
+        session_event attach <<<"$info"
+        session_event receipt "$label" < "$temp/receipt.json"
     fi
     rm -rf "$temp"
 )
@@ -141,6 +143,7 @@ stop_game() {
         id="${1:-}"
         [[ "$id" =~ ^[0-9]+$ && "${2:-}" =~ ^vastgame-[0-9]+$ ]] || return 1
         warn "Force shutdown requested: skipping guest access and save backup; unbacked saves may be lost."
+        session_event state "$2" <<< '{"force_shutdown":true,"backup":"forced_skip"}'
         echo "Destroying Vast instance $id..."
         destroy_verified "$id" "$2" || { warn "Force destruction not confirmed; instance identity retained."; return 1; }
         ok "Instance destroyed — GPU billing stopped"
@@ -165,19 +168,21 @@ stop_game() {
     local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
     label="$(jq -r '.label // empty' <<<"$info")"
     [[ "$label" =~ ^vastgame-[0-9]+$ ]] || { warn "VM identity differs; no shutdown performed"; return 1; }
+    session_event attach <<<"$info"
     endpoint="$(verified_state_endpoint "$info" "$label")" || {
         warn "Cannot read guest activity: no authenticated connection. Backup and destruction skipped; VM still billing."
         return 1
     }
     startup_state="$(startup_shutdown_state "$id" "$info" "$label" "${3:-}" "$endpoint" || true)"
     if [[ "$startup_state" == unstarted ]]; then
+        session_event state "$label" <<< '{"backup":"not_needed"}'
         ok "Game never started; skipping backup"
     elif { echo "Backing up saves..."; safe_backup "$id" "$endpoint"; }; then
-
+        session_event state "$label" <<< '{"backup":"verified"}'
         ok "Final Google Drive state backup complete"
 
     else
-
+        session_event state "$label" <<< '{"backup":"failed"}'
         echo
         warn "Final backup could not be confirmed."
 
@@ -189,7 +194,7 @@ stop_game() {
     echo
     echo "Destroying Vast instance $id..."
 
-    destroy_verified "$id" || die "Destruction could not be confirmed. Check vastgame status; local identity retained."
+    destroy_verified "$id" "$label" || die "Destruction could not be confirmed. Check vastgame status; local identity retained."
 
     ok "Instance destroyed — GPU billing stopped"
 }

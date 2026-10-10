@@ -2,6 +2,12 @@
 set -Eeuo pipefail
 # Resolve the installed symlink so this checkout remains the single source.
 APP_ROOT="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)"
+# Preserve the old force spelling as an alias; all launches use the same checks.
+if [[ "${1:-}" == "force" ]]; then shift; fi
+# Desktop already captures engine output; CLI uses an output PTY for its live display.
+if [[ "${VASTGAME_DESKTOP:-0}" != 1 && "${VASTGAME_HISTORY_CAPTURE:-0}" != 1 ]]; then
+    case "${1:-start}" in start|connect|stop) exec python3 "$APP_ROOT/src/client/session_capture.py" "$@" ;; esac
+fi
 source "$APP_ROOT/src/manager/common.sh"
 source "$APP_ROOT/src/manager/history.sh"
 source "$APP_ROOT/src/manager/provider.sh"
@@ -13,5 +19,5 @@ source "$APP_ROOT/src/manager/persistence.sh"
 source "$APP_ROOT/src/manager/catalog.sh"
 source "$APP_ROOT/src/manager/publication.sh"
 # Help works without Vast, Tailscale, or a configured account.
-case "${1:-}" in help|-h|--help|streamedit|cleanup|update|hosts|list|artwork|details|desktop-launch|desktop-shutdown|desktop-connect|desktop-session|desktop-watch|quote) ;; *) check_dependencies ;; esac
+case "${1:-}" in help|-h|--help|streamedit|desktop-settings|desktop-sensitive|cleanup|update|hosts|balance|sessions|list|artwork|details|desktop-launch|desktop-shutdown|desktop-connect|desktop-session|desktop-watch|desktop-history-prepare|quote) ;; *) check_dependencies ;; esac
 source "$APP_ROOT/src/manager/commands.sh"

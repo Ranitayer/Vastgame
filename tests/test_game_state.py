@@ -105,6 +105,25 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.shader.read_bytes(), b'compiled')
         self.assertEqual(receipt['instance_id'], '123')
 
+    def test_predictable_temporary_symlinks_cannot_redirect_restore(self):
+        self.backup()
+        victim = Path(self.tmp.name)/'outside'; victim.write_bytes(b'unchanged')
+        for destination in (self.save, self.config, self.shader):
+            destination.with_name(destination.name+'.vastgame-tmp').symlink_to(victim)
+            destination.unlink()
+        state.restore(self.m, self.root, self.remote, 'a'*64)
+        self.assertEqual(victim.read_bytes(), b'unchanged')
+        self.assertEqual(self.save.read_bytes(), b'real save')
+        self.assertEqual(self.config.read_text(), 'DLSS=off')
+        self.assertEqual(self.shader.read_bytes(), b'compiled')
+
+    def test_failed_file_replacement_keeps_destination_and_cleans_temporary(self):
+        destination = self.save.with_name('replacement'); destination.write_bytes(b'old')
+        with patch.object(Path, 'replace', side_effect=OSError('disk failure')):
+            with self.assertRaises(OSError): state.replace_state_file(self.save, destination)
+        self.assertEqual(destination.read_bytes(), b'old')
+        self.assertFalse(list(destination.parent.glob('.vastgame-*')))
+
     def test_missing_required_save_blocks_commit(self):
         self.save.unlink()
         with self.assertRaisesRegex(ValueError, 'missing'): self.backup()
@@ -188,7 +207,7 @@ class StopTests(unittest.TestCase):
         fn = cli[cli.index('stop_game() {'):cli.index('\n# ============================================================\n# GAME CATALOG', cli.index('stop_game() {'))]
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp)/'destroy'
-            code = "pick_instance() { echo 123; }; instance_json() { echo '{\"id\":123,\"label\":\"vastgame-123\"}'; }; verified_state_endpoint() { printf 'host\\t22\\n'; }; startup_shutdown_state() { echo unknown; }; safe_backup() { return 1; }; warn() { :; }; ok() { :; }; vastai() { echo destroyed > \"$DESTROY_LOG\"; }; " + fn + '\nstop_game'
+            code = "session_event() { :; }; pick_instance() { echo 123; }; instance_json() { echo '{\"id\":123,\"label\":\"vastgame-123\"}'; }; verified_state_endpoint() { printf 'host\\t22\\n'; }; startup_shutdown_state() { echo unknown; }; safe_backup() { return 1; }; warn() { :; }; ok() { :; }; vastai() { echo destroyed > \"$DESTROY_LOG\"; }; " + fn + '\nstop_game'
             import os
             r = subprocess.run(['bash','-c',code], env=dict(os.environ,DESTROY_LOG=str(log),STATEDIR=tmp), capture_output=True)
             self.assertEqual(r.returncode, 1); self.assertFalse(log.exists())

@@ -13,6 +13,7 @@ class EndpointTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         code = '''
 source "$PROJECT/src/manager/persistence.sh"
+session_event() { :; }
 instance_json() { echo '{"id":123,"label":"vastgame-123","actual_status":"loading"}'; }
 verified_state_endpoint() { return 1; }
 valid_game_id() { [[ "$1" == fixture ]]; }
@@ -40,12 +41,13 @@ stop_game 123 vastgame-123 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
             with self.subTest(desktop=desktop), tempfile.TemporaryDirectory() as temporary:
                 code = r'''
 source "$PROJECT/src/manager/persistence.sh"
+session_event() { :; }
 pick_instance() { echo 123; }
 instance_json() { echo '{"id":123,"label":"vastgame-123"}'; }
 verified_state_endpoint() { echo PROBE >> "$CALLS"; printf 'host\t22\n'; }
 startup_shutdown_state() { [[ "$5" == $'host\t22' ]] || return 99; echo unstarted; }
 safe_backup() { echo UNEXPECTED_BACKUP; return 99; }
-destroy_verified() { echo "DESTROYED $1"; }
+destroy_verified() { [[ "$1" == 123 && "$2" == vastgame-123 ]] || return 99; echo "DESTROYED $1"; }
 warn() { echo "$*" >&2; }
 ok() { echo "$*"; }
 die() { echo "$*" >&2; return 1; }
@@ -59,10 +61,35 @@ die() { echo "$*" >&2; return 1; }
                 self.assertNotIn('UNEXPECTED_BACKUP', result.stdout)
                 self.assertEqual((Path(temporary)/'calls').read_text().splitlines(), ['PROBE'])
 
+    def test_changed_provider_label_after_backup_blocks_destruction(self):
+        root = Path(__file__).resolve().parents[1]
+        code = r'''
+source "$PROJECT/src/manager/provider.sh"
+source "$PROJECT/src/manager/persistence.sh"
+session_event() { :; }
+instance_json() { printf '%s\n' "$INFO"; }
+verified_state_endpoint() { printf 'host\t22\n'; }
+startup_shutdown_state() { echo started; }
+safe_backup() { INFO='{"id":123,"label":"vastgame-999"}'; }
+vastai() { echo MUST_NOT_DESTROY; return 99; }
+warn() { echo "$*" >&2; }
+ok() { echo "$*"; }
+die() { echo "$*" >&2; exit 1; }
+stop_game 123 vastgame-123
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(['bash', '-Eeuo', 'pipefail', '-c', code],
+                env=dict(os.environ, PROJECT=str(root), STATEDIR=temporary, INFO='{"id":123,"label":"vastgame-123"}'),
+                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('MUST_NOT_DESTROY', result.stdout)
+        self.assertIn('Destruction could not be confirmed', result.stderr)
+
     def test_explicit_force_skips_guest_and_backup_but_refuses_wrong_provider_label(self):
         root = Path(__file__).resolve().parents[1]
         code = r'''
 source "$PROJECT/src/manager/persistence.sh"
+session_event() { :; }
 instance_json() { echo '{"id":123,"label":"vastgame-123"}'; }
 verified_state_endpoint() { echo UNEXPECTED_SSH; return 99; }
 safe_backup() { echo UNEXPECTED_BACKUP; return 99; }
@@ -95,6 +122,7 @@ ok() { echo "$*"; }
         source = (Path(__file__).resolve().parents[1]/'src/manager/provider.sh').read_text()
         function = source[source.index('destroy_verified() {'):source.index('\n# ============================================================\n# ERROR HANDLING')]
         code = r'''
+session_event() { :; }
 instance_json() { [[ "$LOOKUP_FAILED" == 0 ]] && printf '%s\n' "$INFO"; }
 vastai() {
     if [[ "$1" == destroy ]]; then echo DESTROY_REQUEST; else printf '%s\n' "$LISTING"; fi
