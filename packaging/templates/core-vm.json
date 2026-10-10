@@ -1,5 +1,5 @@
 {
-  "name": "Vastgame Core VM",
+  "name": "Vastgame Ubuntu CLI",
   "image": "docker.io/vastai/kvm",
   "image_tag": "ubuntu_cli_22.04-2025-11-21",
   "disk_space": 50,

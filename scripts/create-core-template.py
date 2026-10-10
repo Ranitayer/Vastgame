@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create/verify the private Core VM template through vastai, then select it."""
+"""Create/verify the private official Ubuntu CLI VM template, then select it."""
 import json
 import os
 from pathlib import Path
@@ -87,13 +87,14 @@ def main(update=False):
     onstart = '#!/usr/bin/env bash\nset -Eeuo pipefail\n' + setup + '''
 source /etc/environment
 prepare_core_vm
-echo '[VASTGAME] Core VM base ready. Use vastgame start <game-id> for the complete gaming startup.'
+echo '[VASTGAME] Ubuntu CLI base ready. Use vastgame start <game-id> for the complete gaming startup.'
 '''
     matches = rows(cli('search', 'templates', 'creator_id='+str(current['creator_id'])))
-    matches = [t for t in matches if t.get('name') == spec['name']]
+    # Reuse the previous private template when migrating its display name.
+    matches = [t for t in matches if t.get('name') in (spec['name'], 'Vastgame Core VM')]
     if len(matches) > 1:
         raise RuntimeError('Multiple Core VM templates found; refusing to guess')
-    if not matches or update:
+    if not matches or update or matches[0].get('name') != spec['name']:
         if matches and (not matches[0].get('private') or matches[0].get('creator_id') != current['creator_id']):
             raise RuntimeError('Refusing to update a non-private or unrelated template')
         operation = ('update', 'template', matches[0]['hash_id']) if matches else ('create', 'template')
@@ -109,7 +110,7 @@ echo '[VASTGAME] Core VM base ready. Use vastgame start <game-id> for the comple
         raise RuntimeError('Template creation could not be verified; old template remains selected')
     template = matches[0]
     returned_env = environment_fields(template.get('env'))
-    if (not template.get('private') or template.get('runtype') != 'ssh'
+    if (template.get('name') != spec['name'] or not template.get('private') or template.get('runtype') != 'ssh'
             or template.get('image') != spec['image'] or template.get('tag') != spec['image_tag']
             or template.get('onstart') != onstart or not template.get('ssh_direct')
             or template.get('recommended_disk_space') != spec['disk_space']

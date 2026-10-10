@@ -33,7 +33,7 @@ class CoreTemplateTests(unittest.TestCase):
                 self.assertIn('vms_enabled=true',value('--search_params'))
                 env=creator.environment_fields(value('--env'))
                 self.assertNotIn('PORTAL_CONFIG',env)
-                saved.append(dict(id=456,hash_id='core-hash',name='Vastgame Core VM',
+                saved.append(dict(id=456,hash_id='core-hash',name='Vastgame Ubuntu CLI',
                     image=value('--image'),tag=value('--image_tag'),runtype='ssh',private=True,ssh_direct=True,
                     recommended_disk_space=50,env=json.dumps(env),onstart=value('--onstart-cmd'),
                     extra_filters={'vms_enabled':{'eq':True}},creator_id=123))
@@ -49,11 +49,37 @@ class CoreTemplateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg=Path(tmp)/'vastgame'; cfg.mkdir(); (cfg/'template_hash').write_text('previous\n')
             original=dict(creator_id=123,env={'TS_AUTHKEY':'fixture','RCLONE_CONFIG_B64':'fixture'})
-            wrong=dict(name='Vastgame Core VM',private=False)
+            wrong=dict(name='Vastgame Ubuntu CLI',private=False)
             def fake_cli(*args): return [original] if args[2].startswith('hash_id=') else [wrong]
             with patch.dict(os.environ,XDG_CONFIG_HOME=tmp),patch.object(creator,'cli',fake_cli):
                 with self.assertRaisesRegex(RuntimeError,'readback differs'): creator.main()
             self.assertEqual((cfg/'template_hash').read_text(),'previous\n')
+
+    def test_legacy_private_template_is_updated_without_creating_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp)/'vastgame'; cfg.mkdir()
+            (cfg/'template_hash').write_text('old-hash\n')
+            template = dict(id=456, hash_id='old-hash', creator_id=123,
+                            name='Vastgame Core VM', private=True,
+                            env={'TS_AUTHKEY':'fixture', 'RCLONE_CONFIG_B64':'fixture'})
+            requests = []
+            def fake_cli(*args):
+                requests.append(args[:2])
+                if args[:2] == ('search', 'templates'):
+                    return [template]
+                self.assertEqual(args[:3], ('update', 'template', 'old-hash'))
+                def value(key): return args[args.index(key)+1]
+                template.update(name=value('--name'), hash_id='new-hash',
+                                image=value('--image'), tag=value('--image_tag'),
+                                runtype='ssh', ssh_direct=True, recommended_disk_space=50,
+                                env=value('--env'), onstart=value('--onstart-cmd'),
+                                extra_filters={'vms_enabled':{'eq':True}})
+                return {'success':True}
+            with patch.dict(os.environ, XDG_CONFIG_HOME=tmp), patch.object(creator, 'cli', fake_cli):
+                creator.main()
+            self.assertNotIn(('create', 'template'), requests)
+            self.assertEqual(template['name'], 'Vastgame Ubuntu CLI')
+            self.assertEqual((cfg/'template_hash').read_text(), 'new-hash\n')
 
     def test_environment_json_and_shell_formats_preserve_values(self):
         data={'TS_AUTHKEY':'fixture','RCLONE_CONFIG_B64':'abc==','VASTGAME_TEMPLATE_PROFILE':'core-v1'}

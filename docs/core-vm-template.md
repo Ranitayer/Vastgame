@@ -1,6 +1,6 @@
-# Vastgame Core VM
+# Vastgame Ubuntu CLI VM
 
-The private Vast template is named **Vastgame Core VM**. Its source definition is
+The private Vast template is named **Vastgame Ubuntu CLI**. Its source definition is
 `packaging/templates/core-vm.json`; the verified account receipt is
 `~/.config/vastgame/core-vm-template.json`.
 
@@ -69,7 +69,7 @@ For account setup/recreation, run `python3 scripts/create-core-template.py`.
 To update the existing owned private template from the current source, add
 `--update`; saved settings are read back before the local hash is replaced.
 It uses the Vast CLI, copies only required authentication fields from the current
-private template, creates no duplicates when the existing definition matches,
+private template, reuses the former Core VM template when migrating its name, creates no duplicates,
 verifies privacy/image/mode/filter/environment readback before selection, and
 never rents or destroys a VM. Template definitions contain no account secrets.
 Do not publish the account template containing inherited authentication values.
@@ -84,121 +84,17 @@ Use the launcher so the selected template, verified runtime and game disk estima
 are applied together. The updated startup transport and template onstart have
 one top-level shebang and preserve shebangs inside generated runtime scripts.
 
-## Experimental prebuilt guest image
+## Image and template cleanup
 
-The manual `Build experimental Vastgame Core VM` workflow in
-`Ranitayer/Vastgame` publishes `ghcr.io/ranitayer/vastgame-core:build-<commit>`.
-It does not select a template or rent a VM. GitHub's scoped Actions token publishes
-only the image; Vast, Drive, Tailscale and Moonlight credentials are never build
-inputs. The repository and package may remain private during validation; Vast
-will then need registry pull authentication for the eventual test template.
+The experimental custom guest image and its builder have been retired. Launches
+use the official image defined above; old local custom-image selection files are
+ignored. The latest desktop gaming template is retained only as a rollback option.
+Older gaming templates must not be selected. The unrelated Windows VM template
+is outside this cleanup.
 
-`packaging/core-vm/build.sh` extracts the official wrapper's Ubuntu guest disk,
-grows its root filesystem, and installs dependencies *inside that disk* using
-libguestfs. It preserves the official supervisor, entrypoint, environment and working directory.
-The final wrapper is flattened so the overwritten original guest disk is not
-also downloaded as a hidden parent layer. Wrapper configuration is compared before
-publication. An existing prepared image can be flattened by supplying its full
-registry digest in the workflow, without repeating runtime installation. The official base and
-Wolf/Lutris images are resolved to content digests and recorded in the build
-receipt; a new manual build can resolve newer upstream digests. The resulting
-published image must be selected by its registry digest for a live test, not by
-a mutable tag. The receipt records the exact source commit and package inventory
-is embedded at `/usr/share/vastgame/core-packages.txt`.
-
-Container preparation runs after a local boot of the real guest kernel and systemd.
-Temporary SSH access listens only on localhost; its keys, cloud-init override and
-network settings are removed before publication.
-
-The guest caches Wolf/Lutris and the preparation image in Docker's image store.
-It runs the existing Lutris preparation path with a disposable `cmd.exe` probe to
-warm UMU, GE-Proton, Steam Runtime, DXVK and VKD3D. A build fails if that preparation
-fails or does not resolve an installed Proton executable. The test prefix, Lutris
-library, settings and telemetry are removed; only reusable runtime downloads
-survive. SSH host/client identities and machine identity are cleared with
-virt-sysprep. No games, saves, user pairing or host-specific NGX DLLs are included.
-
-At runtime the bootstrap copies the seed into each game's existing bind mounts,
-validates the cached Proton executable and avoids alias-based Proton updates.
-Custom Wine runners bypass the GE-Proton seed. Each real game still gets its own
-prefix, state restore, graphics checks and readiness validation. Game files,
-Wolf identity and the small generic core archive still restore separately.
-
-**The first image was built locally, boot-tested and uploaded on 2026-10-07.
-Fresh Vast GPU/streaming acceptance is still pending.**
-A successful CI build validates the guest filesystem and runtime preparation, not
-Vast's host-specific KVM launch protocol, GPU passthrough, encoding or gameplay.
-The account template continues to supply authentication and SSH settings. The
-local image override described below selects the prebuilt disk for acceptance.
-Hardware virtualization is used when available, with software virtualization
-for builders without KVM. A build does not need a physical GPU; the final wrapper still uses Vast's KVM launcher.
-
-### Local image builds
-
-The same builder can run on an x86_64 Linux workstation with Docker,
-libguestfs tools, QEMU, jq and Python installed. Run it as an ordinary user
-with access to Docker. It defaults to disk-backed `build/core-vm-work`,
-requires 40 GiB free, and places guest networking sockets in a private `/tmp`
-directory for the duration of the build. It does not change the desktop's
-runtime directory or disable AppArmor.
-
-```bash
-CORE_IMAGE=ghcr.io/ranitayer/vastgame-core \
-GITHUB_SHA=$(git rev-parse HEAD) bash packaging/core-vm/build.sh
-```
-
-Upload the resulting `build-<commit>` image to GHCR using an account authorized
-to write that package. Record its registry digest in the build receipt.
-Publishing is not live acceptance: test the resulting image on Vast before
-selecting it as the default.
-
-### Published experimental image
-
-The smaller Core image is pinned to:
-
-```text
-ghcr.io/ranitayer/vastgame-core@sha256:f7b5cbd83825d9e60f7b16b36555e76c4d327614141e629779284944db9d6fb7
-```
-
-Its single compressed layer is 7,568,588,155 bytes (about 7.57 GB), 12.13% smaller
-than the original build. APT downloads, non-license guest documentation and unused
-disk blocks were removed. Gaming containers, drivers, locales and the prepared
-runtime remain. Runtime file hashes and disk integrity were verified; the smaller
-image has not had a live Vast test. Local boot, Docker, GE-Proton11-7, Steam Runtime,
-DXVK/VKD3D and temporary-identity cleanup were checked on the original build.
-The package must be public before enabling the launcher override;
-repository visibility does not change package visibility. The existing private
-Vast template is unchanged; this image has not yet passed a fresh
-Vast GPU/encoding/gameplay test. The original build receipt is attached to the
-`core-vm-527850c` experimental GitHub release. The smaller image's local receipt is
-`build/core-slim-local/slim-receipt.json`; its published tag is
-`slim-20261008-f7b5cbd`.
-
-`bash packaging/core-vm/slim.sh` makes a local compact copy using the pinned image.
-It does not upload it or change the selected launch image. Keep temporary build
-space on disk, and verify a replacement before removing the previous version.
-
-### Custom image launch status
-
-The published image remains experimental. The 2026-10-08 Vast trial started the
-outer SSH container instead of the guest. The existing `vm: true` API request did
-not establish a working VM launch. Vast's public VM guide specifies SSH-only
-launches; the generic `args` container mode is not a verified substitute for the
-provider's VM supervisor, GPU passthrough and guest startup transport.
-
-At the user's request, `~/.config/vastgame/core-image.json` now enables the pinned
-custom image for future rentals. The launcher warns that guest launch remains
-unverified. The receipt also remains in `core-image.experimental.json`.
-Existing VMs retain the image and bootstrap they were created with.
-The image has not been deleted, and its guest disk/runtime remain available.
-Fixing custom image support requires confirmation of the provider-supported
-custom VM launch contract and a successful fresh-VM acceptance run. Do not treat
-local guest boot or registry upload as proof of Vast compatibility.
-
-New launches use the selected custom image with the Core VM template. Startup logs are checked during
-both provider boot and Tailscale discovery. A missing-domain message alone is
-allowed initially; if Vast remains `created` and repeated logs still end there
-for five minutes, the watcher reports that guest boot is unconfirmed. Explicit
-bootstrap errors fail immediately at the next log probe. Status, log and local
-Tailscale calls have bounded deadlines. Failures do not destroy possible saves
-or submit another rental automatically.
+The official Docker Hub tag was confirmed active on 2026-10-10, with digest
+`sha256:a6f350dcd5616f3b98ce239ce3fdd534c1ddd59f6fcbebbe1db4c5f8a1f721ba`.
+The template uses the version tag supplied by Vast. No VM was rented for this
+configuration update. Configuration readback verifies the image, SSH mode, VM
+filter, private environment and startup command; it does not prove GPU passthrough
+or game streaming on a particular host.

@@ -75,18 +75,15 @@ an already installed Flatpak Moonlight and imports the native client identity
 and settings while Moonlight is closed. Previous Flatpak settings are backed up
 locally. The custom native HUD and Crashpad are unavailable through Flatpak.
 
-The experimental prebuilt Core VM build is defined in
-[the Core VM guide](docs/core-vm-template.md). It prepares the actual guest disk
-and can be built locally or through GitHub Actions. The first image is published
-and passed local boot/runtime checks. A configured `core-image.json` selects its pinned digest; removing that selection
-uses the template image. The custom-image Vast launch integration remains
-unverified. The launcher warns when it is selected.
-Changing image selection does not modify an existing VM. Fresh Vast GPU/streaming
-acceptance remains pending.
+The private [Ubuntu CLI VM template](docs/core-vm-template.md) uses Vast's official
+`docker.io/vastai/kvm:ubuntu_cli_22.04-2025-11-21` image with Vastgame's guest startup
+configuration. No custom guest image or image override is used. Changing the
+selected template affects future rentals only. Fresh GPU/streaming acceptance
+requires a real launch.
 
 All rental requests explicitly send `vm: true`, including template-based launches.
 The installed Vast CLI does not expose this field; the shared API helper preserves
-the template's image and environment unless a custom image is selected.
+the selected template's image and environment.
 Boot and Tailscale waits check provider logs every 30 seconds. Explicit bootstrap
 errors stop the watcher. Missing-domain messages alone do not stop boot. Current
 provider GPU errors are reported even when a stop is planned; confirmed running

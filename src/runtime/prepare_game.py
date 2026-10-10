@@ -85,22 +85,6 @@ def pin_environment(env, command):
     return pinned
 
 
-def runtime_seed_environment(manifest, profiles=Path('/profiles')):
-    # Honor only the generic GE-Proton seed, never override a custom runner.
-    if manifest.get('runner', {}).get('version', 'ge-proton').lower() != 'ge-proton':
-        return {}
-    seed = profiles / manifest['id'] / 'runtime-seed.json'
-    if not seed.is_file():
-        return {}
-    env = json.loads(seed.read_text())
-    if (not isinstance(env, dict) or set(env) != {'PROTONPATH', 'UMU_RUNTIME_UPDATE'}
-            or not isinstance(env['PROTONPATH'], str) or env['UMU_RUNTIME_UPDATE'] != '0'
-            or not Path(env['PROTONPATH']).is_absolute()
-            or not (Path(env['PROTONPATH']) / 'proton').is_file()):
-        raise RuntimeError('Prebuilt Proton cache is incomplete or invalid')
-    return env
-
-
 def prepare(manifest, runner):
     prefix = '/prefixes/' + manifest['id']
     Path('/shaders/' + manifest['id'] + '/cache').mkdir(parents=True, exist_ok=True)
@@ -113,7 +97,6 @@ def prepare(manifest, runner):
     env.update(manifest.get('environment', {}))
     env['WINEPREFIX'] = prefix
     runner.finish_env(env, None)
-    env.update(runtime_seed_environment(manifest))
     env['PROTON_VERB'] = 'waitforexitandrun'
     command = runner.get_command()
     if not command:

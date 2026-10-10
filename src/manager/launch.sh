@@ -16,10 +16,6 @@ echo
 bold "Stage 1/3 — Creating Vast VM"
 
 echo "Submitting selected offer directly to Vast..."
-if [[ -s "$CFGDIR/core-image.json" ]]; then
-    echo "Using the pinned prebuilt Core VM image."
-    warn "Custom image guest launch is not verified on Vast; the previous trial failed before Tailscale."
-fi
 
 # The full bootstrap has grown beyond Vast's request-size limit.
 # Compress it locally and send a tiny self-extracting wrapper.
@@ -61,13 +57,8 @@ if [[ "${VASTGAME_DESKTOP:-0}" == 1 ]]; then printf '[VASTGAME_CREATE_REQUESTED]
 set +e
 
 create_out="$(
-    if [[ -s "$CFGDIR/core-image.json" ]]; then
-        timeout --foreground 90s python3 "$APP_ROOT/src/manager/create_vm.py" \
-            "$CFGDIR/core-image.json" "$TEMPLATE_HASH" "$offer_id" "$DISK_GB" "$label" "$packed_onstart"
-    else
-        timeout --foreground 90s python3 "$APP_ROOT/src/manager/create_vm.py" \
-            - "$TEMPLATE_HASH" "$offer_id" "$DISK_GB" "$label" "$packed_onstart"
-    fi 2>&1
+    timeout --foreground 90s python3 "$APP_ROOT/src/manager/create_vm.py" \
+        "$TEMPLATE_HASH" "$offer_id" "$DISK_GB" "$label" "$packed_onstart" 2>&1
 )"
 
 create_rc=$?

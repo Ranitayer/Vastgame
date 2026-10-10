@@ -565,14 +565,6 @@ RETRO_GID="$(
   chmod -R u+rwX "/srv/gaming/profiles/$GAME_ID" "/srv/gaming/prefixes/$GAME_ID" "/srv/gaming/lutris/$GAME_ID" "/srv/gaming/shaders/$GAME_ID" /var/lib/vast-gaming/status
   mkdir -p "/srv/gaming/lutris/$GAME_ID/home"/{.local,.config,.cache}
   chown -R "$RETRO_UID:$RETRO_GID" "/srv/gaming/lutris/$GAME_ID"
-  # Seed only immutable runtime downloads; per-game prefixes/state remain separate.
-  if [ -s /opt/vastgame/runtime-seed/runtime-seed.json ] &&
-     [ ! -f "/srv/gaming/lutris/$GAME_ID/.core-seeded" ]; then
-    cp -a /opt/vastgame/runtime-seed/. "/srv/gaming/lutris/$GAME_ID/"
-    mv "/srv/gaming/lutris/$GAME_ID/runtime-seed.json" "/srv/gaming/profiles/$GAME_ID/runtime-seed.json"
-    touch "/srv/gaming/lutris/$GAME_ID/.core-seeded"
-    chown -R "$RETRO_UID:$RETRO_GID" "/srv/gaming/lutris/$GAME_ID" "/srv/gaming/profiles/$GAME_ID"
-  fi
   progress_set proton running "Preparing Proton"
   preparation_log="/srv/gaming/profiles/$GAME_ID/logs/preparation.log"
   # Add only the setup display dependencies; inherit the exact cached Lutris base.

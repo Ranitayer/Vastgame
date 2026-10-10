@@ -17,7 +17,7 @@ class CreateVMTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             startup = Path(directory)/'startup.sh'
             startup.write_text('#!/bin/sh\ntrue\n')
-            with patch.object(create_vm.sys, 'argv', ['create_vm.py', '-', 'template', '123', '60', 'vastgame-123', str(startup)]), \
+            with patch.object(create_vm.sys, 'argv', ['create_vm.py', 'template', '123', '60', 'vastgame-123', str(startup)]), \
                  patch.dict(create_vm.os.environ, {'VAST_API_KEY': 'fixture'}), \
                  patch.object(create_vm, 'build_opener') as opener, \
                  patch('sys.stdout', new_callable=io.StringIO):
