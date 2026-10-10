@@ -1,8 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { fade } from 'svelte/transition';
   let { open, anchor, label, onclose, children, menu = false, above = false, persistent = false }: { open: boolean; anchor: HTMLElement | undefined; label: string; onclose: () => void; children: Snippet; menu?: boolean; above?: boolean; persistent?: boolean } = $props();
-  const duration = globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 140;
   $effect(() => { if (!open || menu || persistent) return; const timer = setTimeout(onclose, 2000); return () => clearTimeout(timer); });
   function place(node: HTMLDivElement) {
     document.body.appendChild(node);
@@ -33,7 +31,7 @@
     return { destroy() { observer.disconnect(); window.removeEventListener('resize', position); document.removeEventListener('scroll', position, true); document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', keyboard, true); node.remove(); } };
   }
 </script>
-{#if open}<div class="popover" class:menu use:place transition:fade={{ duration: menu ? 0 : duration }} role={menu ? "menu" : "dialog"} aria-label={label}>{@render children()}</div>{/if}
+{#if open}<div class="popover" class:menu use:place role={menu ? "menu" : "dialog"} aria-label={label}>{@render children()}</div>{/if}
 <style>
   .popover { position: fixed; z-index: 1000; width: 320px; max-width: calc(100vw - var(--page-margin) * 2); max-height: calc(100vh - var(--page-margin) * 2); overflow: auto; padding: var(--page-margin); border: 1px solid var(--surface-active); border-radius: 20px; background: var(--surface-hover); color: var(--text); box-shadow: 0 6px 20px var(--surface); font-size: 12px; line-height: 1.5; }
   .popover.menu { padding: 6px; overflow: hidden; }

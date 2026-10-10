@@ -104,6 +104,11 @@ def update(label, **changes):
             if changes.get('outcome') != 'stopped' and changes.get('force_shutdown') is not True:
                 for key in ('phase', 'progress_stage', 'outcome', 'game_running_at', 'game_running', 'backup'): changes.pop(key, None)
             if 'force_shutdown' in changes: changes['force_shutdown'] = True
+        # Keep failure history separate from confirmed rental destruction.
+        if (changes.get('last_attempt_success') is False and not (record.get('force_shutdown') or changes.get('force_shutdown'))) or (
+                (changes.get('force_shutdown') or changes.get('outcome') == 'stopped' or changes.get('ended_at')) and
+                record.get('last_attempt_success') is False and not record.get('force_shutdown')):
+            changes['failed'] = True
         if changes.get('instance_id') and record.get('instance_id') not in (None, changes['instance_id']):
             raise ValueError('Session instance identity differs')
         running = changes.get('game_running')
@@ -263,6 +268,7 @@ def job_update(record):
     if isinstance(progress, dict) and isinstance(progress.get('active'), str) and progress['active'] in dict(STAGES):
         changes['progress_stage'] = dict(STAGES)[progress['active']]
     if record.get('finished'): changes['last_attempt_success'] = bool(record.get('success'))
+    if record.get('finished') and record.get('success') is False and record.get('phase') == 'Shutdown failed; VM retained': changes['failed'] = True
     if record.get('instance_id'): changes['instance_id'] = record['instance_id']
     if record.get('creation_requested'): changes['creation_requested_at'] = read(label).get('creation_requested_at') or milliseconds()
     if record.get('game_running'): changes['game_running_at'] = read(label).get('game_running_at') or milliseconds()
@@ -424,7 +430,7 @@ def summary(record):
 
 def display_state(record):
     if record.get('ended_at') or record.get('outcome') == 'stopped':
-        return 'Failed' if record.get('outcome') == 'no_rental' else 'Shutdown'
+        return 'Failed' if record.get('failed') or (record.get('last_attempt_success') is False and not record.get('force_shutdown')) or record.get('outcome') == 'no_rental' else 'Shutdown'
     if record.get('operation_pending') or record.get('outcome') in ('preparing', 'creating'): return 'Starting'
     if record.get('phase') == 'Game exited': return 'Retained'
     if record.get('phase') == 'Game running' and record.get('game_running'): return 'Running'

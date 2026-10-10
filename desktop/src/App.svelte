@@ -12,6 +12,7 @@
   import { preferences } from './settings/preferences.svelte';
   import { hosts } from './hosts/catalog.svelte';
   import { tabs, type TabId } from './navigation';
+  import { titlebarDrag } from './titlebar';
 
   const window = getCurrentWindow();
   let error = $state('');
@@ -61,7 +62,7 @@
 <svelte:window onfocus={() => void reconcileLaunch()}/>
 
 <div class="shell" class:edge-to-edge={edgeToEdge}>
-  <header class="titlebar">
+  <header class="titlebar" use:titlebarDrag={{ start: () => window.startDragging(), onerror: () => error = 'Window movement unavailable. Use your system window controls.' }}>
     <div class="drag-region" data-tauri-drag-region>
       <span class="brand" data-tauri-drag-region>Vastgame</span>
     </div>

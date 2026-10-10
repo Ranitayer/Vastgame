@@ -5,6 +5,7 @@ export interface SessionRecord {
   duration_ms?: number | null; played_ms?: number | null; game_active_since?: number | null;
   summary_at?: number;
   outcome: string; phase?: string; last_error?: string; game_running?: boolean;
+  failed?: boolean; last_attempt_success?: boolean; force_shutdown?: boolean;
   state?: SessionState; operation_pending?: boolean;
   rig?: { machine_id?: number; gpu_name?: string; gpu_ram?: number; geolocation?: string; cpu_name?: string; inet_down?: number; inet_up?: number };
   logs_complete?: boolean;
@@ -16,9 +17,10 @@ export type SessionState = 'Starting' | 'Running' | 'Failed' | 'Retained' | 'Shu
 export interface SessionQuery { days: number; status: string; order: string; }
 export interface SessionCatalog { sessions: SessionRecord[]; total: number; skipped: number; }
 export function sessionState(record: SessionRecord): SessionState {
-  if (record.ended_at || record.outcome === 'stopped') return record.outcome === 'no_rental' ? 'Failed' : 'Shutdown';
+  const closedState = record.failed || (record.last_attempt_success === false && !record.force_shutdown) || record.outcome === 'no_rental' ? 'Failed' : 'Shutdown';
+  if (record.ended_at || record.outcome === 'stopped') return closedState;
   if (record.job_id === launch.jobId) {
-    if (launch.status === 'stopped') return 'Shutdown';
+    if (launch.status === 'stopped') return closedState;
     if (launch.status === 'starting' || launch.connecting) return 'Starting';
     if (launch.status === 'error') return 'Failed';
     if (launch.instanceId) return launch.phase === 'Game exited' ? 'Retained' : launch.gameRunning || launch.busy ? 'Running' : 'Retained';

@@ -6,6 +6,10 @@ custom CSS. It runs one active rig controller per window. There is no web server
 account database, separate app rental engine or general-purpose shell API.
 
 For the underlying storage/runtime design, see [system architecture](../docs/architecture.md).
+Failed rentals keep their failure classification after confirmed destruction;
+the durable engine marker survives later successful stops, while end times and
+closed identity continue to govern billing and actions.
+
 For persisted session fields and billing rules, see [sessions](../docs/sessions.md).
 For contributor layout rules, see [AGENTS.md](AGENTS.md).
 
@@ -26,7 +30,11 @@ flowchart LR
   Native -->|Tauri Channel| UI
 ```
 
-`src/main.ts` mounts `App.svelte`. `src-tauri/src/main.rs` creates the native
+`src/main.ts` mounts `App.svelte`. Its title bar uses `titlebar.ts` to start
+native movement after a 4px pointer threshold over navigation controls. Drag
+release does not activate the control; clicks and keyboard navigation still work.
+Native window controls and the existing brand drag region keep their own behavior.
+`src-tauri/src/main.rs` creates the native
 window and registers the fixed IPC commands. A production `pnpm build:app`
 embeds Vite's `dist/` with Tauri's production protocol. A plain Cargo build can
 retain the development URL and fail with a refused localhost connection when
@@ -58,8 +66,9 @@ is deliberately inactive. Standalone Hosts/Library tabs and pages are removed.
 Every action uses `Button.svelte`: size, rounded shape, semantic tone, focus,
 disabled state and color fades live there. No buttons or covers zoom.
 `Dropdown.svelte` reuses `Popover.svelte` and adds search to large choice lists.
-Menus scroll with wheel/touch/keyboard and hide the native scrollbar. Notices
-fade after two seconds; destructive Settings confirmations and detailed results
+Menus scroll with wheel/touch/keyboard and hide the native scrollbar. Every popup
+appears/disappears instantly without transitions. Ordinary notices close after
+two seconds; destructive Settings confirmations and detailed results
 use the existing persistent popup mode, with viewport-safe placement.
 
 `DetailsPanel.svelte` owns the right-side surface used by Home and Sessions.

@@ -41,7 +41,14 @@ and older records containing useful details are kept visible.
 
 Time and state filters and sorting apply to the full ledger before pagination.
 Time ranges are rolling 1, 3, 7, 30 or 365 days based on session start time.
-States include Starting, Running, Failed, Retained and Shutdown. In-progress
+States include Starting, Running, Failed, Retained and Shutdown. Actual failed
+attempts leave a durable failure marker: once that rental is closed, it stays
+Failed even after a successful reconnect or shutdown. Provider-confirmed
+destruction still records `outcome: stopped` and the end time; billing and
+re-rental actions use that identity, not the presentation label. Successful
+rentals remain Shutdown. Forced cancellation of an unfinished startup worker
+is not a failure by itself. Older records use preserved failure evidence;
+failure information already overwritten by old versions cannot be invented. In-progress
 operations show Starting even before the provider returns an instance ID.
 Cost sorting uses provider-reported totals when available, otherwise the
 compute/storage estimate; unknown costs sort last in either direction.

@@ -163,7 +163,7 @@ class HistoryTests(unittest.TestCase):
         pending = dict(outcome='active', instance_id='42', operation_pending=True, last_attempt_success=False)
         self.assertEqual(history.display_state(pending), 'Starting')
         self.assertEqual(history.display_state(dict(pending, operation_pending=False)), 'Failed')
-        self.assertEqual(history.display_state(dict(pending, ended_at=1, outcome='stopped')), 'Shutdown')
+        self.assertEqual(history.display_state(dict(pending, ended_at=1, outcome='stopped')), 'Failed')
         self.assertEqual(history.display_state(dict(outcome='active', operation_pending=False, game_running=True)), 'Running')
 
     def test_filters_sort_the_whole_history_and_put_unknown_values_last(self):
@@ -215,6 +215,44 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(history.read(self.label)['started_at'], 1700000000000)
         self.assertIsNone(history.read(self.label)['ended_at'])
         self.worker.assert_not_called()
+
+    def test_failed_rental_stays_failed_after_reconnect_shutdown_and_late_updates(self):
+        history.begin(self.label, 'fixture')
+        history.attach(dict(id=42, label=self.label))
+        history.finish_attempt(self.label, 1)
+        history.job_update(dict(label=self.label, instance_id='42', finished=True, success=True))
+        history.destroyed('42')
+        history.job_update(dict(label=self.label, finished=True, stopped=True, success=True))
+        history.update(self.label, last_attempt_success=True, outcome='active', ended_at=None)
+        record = history.read(self.label)
+        self.assertTrue(record['failed'])
+        self.assertEqual(record['outcome'], 'stopped')
+        self.assertIsNotNone(record['ended_at'])
+        self.assertEqual(history.summary(record)['state'], 'Failed')
+        self.assertEqual(len(history.select_sessions([record], state='Failed')), 1)
+        self.assertEqual(history.select_sessions([record], state='Shutdown'), [])
+
+    def test_successful_and_canceled_rentals_do_not_become_failed(self):
+        for forced in (False, True):
+            label = history.new_label()
+            history.begin(label, 'fixture'); history.attach(dict(id=42, label=label))
+            if forced:
+                history.update(label, force_shutdown=True, backup='forced_skip')
+                history.job_update(dict(label=label, instance_id='42', force_shutdown=True, finished=True, success=False))
+            else: history.finish_attempt(label, 0)
+            history.destroyed('42', label)
+            self.assertEqual(history.summary(history.read(label))['state'], 'Shutdown')
+
+    def test_force_shutdown_preserves_real_failure_and_legacy_failure_evidence(self):
+        history.begin(self.label, 'fixture'); history.attach(dict(id=42, label=self.label))
+        with history.locked(self.label) as path:
+            legacy = history.read(self.label)
+            legacy.update(last_attempt_success=False, outcome='retained')
+            history.write(path/'session.json', legacy)
+        history.update(self.label, force_shutdown=True, backup='forced_skip')
+        history.destroyed('42', self.label)
+        self.assertTrue(history.read(self.label)['failed'])
+        self.assertEqual(history.summary(history.read(self.label))['state'], 'Failed')
 
     def test_unknown_creation_does_not_become_a_zero_cost_failed_attempt(self):
         history.begin(self.label)
