@@ -31,9 +31,14 @@ flowchart LR
 ```
 
 `src/main.ts` mounts `App.svelte`. Its title bar uses `titlebar.ts` to start
-native movement after a 4px pointer threshold over navigation controls. Drag
+native movement after a 4px mouse threshold over navigation controls. Drag
 release does not activate the control; clicks and keyboard navigation still work.
-Native window controls and the existing brand drag region keep their own behavior.
+Canceled/released gestures clear suppression, including when native movement
+consumes browser mouseup, so the next click needs no retry. Mouse presses reset
+the gesture independently of the pointer stream, matching Tauri native dragging.
+Only the actual minimize/maximize/close buttons are excluded; the empty space
+between navigation and those buttons also moves the window. The existing brand
+drag region keeps its native behavior.
 `src-tauri/src/main.rs` creates the native
 window and registers the fixed IPC commands. A production `pnpm build:app`
 embeds Vite's `dist/` with Tauri's production protocol. A plain Cargo build can

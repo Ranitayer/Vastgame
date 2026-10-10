@@ -1,5 +1,7 @@
-# Vastgame 1.1.11 — Draggable navigation and instant popups
+# Vastgame 1.1.12 — Complete title-bar dragging
 
+- The empty title-bar space between the navigation tabs and native window buttons is draggable. Only the actual minimize/maximize/close buttons are excluded.
+- Tab dragging no longer leaves stale click suppression after native pointer cancellation/release. A normal first click after moving works; keyboard activation and mouse focus remain available.
 - Grab and move the title bar over its tabs, account balance, Save/Reset buttons or empty navigation space. A small movement threshold preserves normal clicks and keyboard navigation; releasing a drag does not activate the tab/button. Native minimize/maximize/close controls retain their own behavior.
 - All shared popups appear and disappear instantly, including notices, dropdowns, Settings errors and Sensitive settings confirmations/results. Ordinary notices still close after two seconds. Menus and destructive confirmations keep their existing dismissal and confirmation rules.
 - Failed rentals remain Failed in cards, details and the Failed filter after confirmed shutdown. A durable failure marker survives successful reconnects and stops; actual destruction time, costs and exact-rig actions still use the closed rental identity. Successful sessions and canceled startup workers do not gain a failure marker merely from shutdown.
