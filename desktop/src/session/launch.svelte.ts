@@ -2,11 +2,11 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Game } from '../library/types';
 import type { Host } from '../hosts/types';
 import type { StartupProgress } from './progress';
-import { importantLog, appendLogs, type LogEntry } from './logs';
+import { formatLog, appendLogs, type LogEntry } from './logs';
 export interface LaunchError { code: string; message: string; required?: number; available?: number; current?: number; approved?: number; }
 interface Quote { offer_id: number; machine_id: number | null; price: number; disk_gb: number; }
-interface Event { progress?: StartupProgress; game_running?: boolean; error?: LaunchError; type: string; line?: string; time?: number | null; phase?: string; ok?: boolean; instance_id?: string | null; }
-export const launch = $state({ jobId: '', gameId: '', gameName: '', rig: null as Host | null, gameRunning: false, phase: '', busy: false, connecting: false, stopping: false, instanceId: null as string | null, status: 'idle', stateFresh: false, observedAt: 0, unresolved: false, restoring: true, progress: null as StartupProgress | null, error: null as LaunchError | null, logs: [] as LogEntry[] });
+interface Event { progress?: StartupProgress; game_running?: boolean; error?: LaunchError; type: string; line?: string; phase?: string; ok?: boolean; instance_id?: string | null; }
+export const launch = $state({ jobId: '', gameId: '', gameName: '', rig: null as Host | null, gameRunning: false, phase: '', busy: false, connecting: false, stopping: false, shutdownRequested: false, forcing: false, instanceId: null as string | null, status: 'idle', stateFresh: false, observedAt: 0, unresolved: false, restoring: true, progress: null as StartupProgress | null, error: null as LaunchError | null, logs: [] as LogEntry[] });
 let restoration: Promise<void> | undefined;
 let restored = false;
 let restoreError = '';
@@ -14,9 +14,10 @@ let lastRefresh = 0;
 let pendingQuote: { key: string; quote: Quote } | null = null;
 let queue: LogEntry[] = [];
 let launchCanceled = false;
+let shutdownGeneration = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
-function log(line: string, time?: number | null) {
-  const entry = importantLog(line, time ?? Date.now());
+function log(line: string) {
+  const entry = formatLog(line);
   if (!entry) return;
   queue.push(entry);
   if (queue.length > 500) queue.shift();
@@ -25,7 +26,7 @@ function log(line: string, time?: number | null) {
 }
 function receive(event: Event, job: string, shutdown = false, logsOnly = false) {
   if (launch.jobId !== job) return;
-  if (event.type === 'log' && event.line) log(event.line, event.time);
+  if (event.type === 'log' && event.line) log(event.line);
   if (logsOnly || (!shutdown && launchCanceled)) return;
   if (event.progress) {
     if (event.progress.active !== launch.progress?.active) {
@@ -64,7 +65,7 @@ export async function play(game: Game, rig: Host | null): Promise<string> {
   const job = crypto.randomUUID().replaceAll('-', '');
   const key = `${game.id}:${rig.id}:${game.required_disk_gb}`;
   const approved = Math.max(rig.dph_total, pendingQuote?.key === key ? pendingQuote.quote.price : 0);
-  Object.assign(launch, { jobId: job, gameId: game.id, gameName: game.name, rig, gameRunning: false, phase: 'Refreshing game quote', busy: true, stopping: false, instanceId: null, status: 'starting', error: null, logs: [], progress: null, stateFresh: false, unresolved: false });
+  Object.assign(launch, { jobId: job, gameId: game.id, gameName: game.name, rig, gameRunning: false, phase: 'Refreshing game quote', busy: true, stopping: false, shutdownRequested: false, forcing: false, instanceId: null, status: 'starting', error: null, logs: [], progress: null, stateFresh: false, unresolved: false });
   try {
     const result = await invoke<{ quote?: Quote; error?: LaunchError }>('quote_game', { gameId: game.id, offerId: rig.id, machineId: rig.machine_id ?? 0 });
     if (launch.jobId !== job) return '';
@@ -108,19 +109,35 @@ export async function connect(): Promise<string> {
     if (event.type === 'finished' && !event.ok) message ||= event.phase || 'Connection failed – check Logs';
   };
   launchCanceled = false;
-  launch.connecting = true; launch.busy = true; launch.status = 'connecting'; launch.error = null; launch.phase = 'Opening stream';
+  launch.connecting = true; launch.busy = true; launch.status = 'starting'; launch.error = null; launch.progress = null; launch.phase = 'Resuming rig';
   try { await invoke('connect_game', { jobId: job, events: channel }); }
   catch (error) { message = String(error); log(`[CONNECT_FAILED] ${message}`); launch.status = 'error'; launch.phase = 'Connection failed; VM retained'; }
   finally { launch.connecting = false; launch.busy = false; }
   return message;
 }
 export function shutdown() {
-  if (!launch.instanceId || launch.connecting || launch.stopping) return;
+  if (!launch.instanceId || launch.forcing || launch.connecting) return;
   const job = launch.jobId;
+  const force = launch.shutdownRequested;
+  const generation = ++shutdownGeneration;
   launchCanceled = true;
-  launch.stopping = true; launch.busy = true; launch.status = 'stopping'; launch.error = null; launch.phase = 'Checking rig';
-  void invoke('shutdown_game', { jobId: job, events: events(job, true) })
-    .catch(error => { log(`[SHUTDOWN_FAILED] ${String(error)}`); launch.busy = false; launch.stopping = false; launch.status = 'error'; launch.phase = 'Shutdown failed; VM retained'; });
+  launch.shutdownRequested = true; launch.forcing = force;
+  launch.stopping = true; launch.busy = true; launch.status = 'stopping'; launch.error = null;
+  launch.phase = force ? 'Force stopping rig' : 'Checking rig';
+  const channel = new Channel<Event>();
+  channel.onmessage = event => {
+    if (generation !== shutdownGeneration) {
+      if (launch.jobId === job && event.type === 'log' && event.line) log(event.line);
+      return;
+    }
+    receive(event, job, true);
+  };
+  void invoke('shutdown_game', { jobId: job, force, events: channel })
+    .catch(error => {
+      if (generation !== shutdownGeneration || launch.jobId !== job) return;
+      log(`[SHUTDOWN_FAILED] ${String(error)}`); launch.busy = false; launch.stopping = false;
+      launch.status = 'error'; launch.phase = 'Shutdown failed; VM retained';
+    }).finally(() => { if (generation === shutdownGeneration && launch.jobId === job) launch.forcing = false; });
 }
 
 export function restoreLaunch(refresh = false): Promise<void> {
@@ -133,7 +150,7 @@ export function restoreLaunch(refresh = false): Promise<void> {
     try {
       const result = await invoke<{ error?: LaunchError; session?: null | {
         jobId: string; gameId: string; gameName: string; instanceId: string | null;
-        phase: string; status: string; gameRunning: boolean; stateFresh: boolean; observedAt: number; progress: StartupProgress | null;
+        phase: string; status: string; shutdownRequested: boolean; gameRunning: boolean; stateFresh: boolean; observedAt: number; progress: StartupProgress | null;
       } }>('current_launch', { jobId: expected || null });
       if (result.error) throw new Error(result.error.message);
       if (launch.jobId !== expected || launch.stopping || (expected && launch.status === 'stopped')) return;
@@ -162,7 +179,6 @@ export function reconcileLaunch() {
 }
 
 export function compactPhase(): string {
-  if (launch.connecting) return 'Opening stream';
   if (launch.gameRunning && launch.status === 'ready') return 'Last running';
   if (launch.status === 'quote') return 'Confirm price';
   if (launch.status === 'error') return launch.instanceId ? 'Rig retained' : 'Launch failed';

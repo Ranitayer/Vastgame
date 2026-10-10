@@ -46,6 +46,18 @@ if [ -r /etc/environment ]; then
   source /etc/environment
   set -u
 fi
+# Publish cancellation evidence before dependency installation can fail.
+mkdir -p /var/lib/vast-gaming/status /srv/gaming/profiles
+[[ "${VASTGAME_LAUNCH_LABEL:-}" =~ ^vastgame-[0-9]+$ ]] || fail "Invalid VM launch identity"
+[[ "$GAME_ID" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail "Invalid game identity"
+printf '%s\n' "$VASTGAME_LAUNCH_LABEL" > /var/lib/vast-gaming/status/instance-label
+printf '%s\n' "$GAME_ID" > /var/lib/vast-gaming/status/game-id
+# This bootstrap only starts a guarded runtime; cancellation stays durable during restores.
+touch /var/lib/vast-gaming/status/bootstrap-launch-guard-v1
+if [[ -e /var/lib/vast-gaming/status/stopping ]]; then
+  echo "[VASTGAME] Startup cancelled; game launch blocked"
+  exit 0
+fi
 if [ "${VASTGAME_TEMPLATE_PROFILE:-}" = core-v1 ]; then
   declare -F prepare_core_vm >/dev/null || fail 'Core VM setup missing from startup transport'
   trap 'bootstrap_failure "$?" "$LINENO" "$BASH_COMMAND" "${BASH_SOURCE[0]}"' ERR
@@ -171,7 +183,6 @@ trap 'bootstrap_failure "$?" "$LINENO" "$BASH_COMMAND" "${BASH_SOURCE[0]}"' ERR
 
 
 mkdir -p /opt/vastgame
-printf '%s\n' "${VASTGAME_LAUNCH_LABEL:-}" > /var/lib/vast-gaming/status/instance-label
 
 # Check Python compatibility before downloading runtime images or games.
 if ! python3 -c "import importlib.util; assert any(importlib.util.find_spec(n) for n in ('tomllib', 'tomli', 'pip._vendor.tomli'))"; then
@@ -785,6 +796,10 @@ with open('/etc/wolf/cfg/config.toml', encoding='utf-8') as f:
     tomllib.loads(f.read())
 PYTOML
 
+if [[ -e /var/lib/vast-gaming/status/stopping ]]; then
+  echo "[VASTGAME] Startup cancelled; game launch blocked"
+  exit 0
+fi
 progress_phase WOLF
 progress_set setup running "Starting Wolf streaming server"
 

@@ -167,9 +167,7 @@ sync_game_resolution() (
     [[ "$label" =~ ^vastgame-[0-9]+$ ]] || return 1
     endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
     host="${endpoint%%$'\t'*}"; port="${endpoint#*$'\t'}"
-    timeout 20 ssh -F /dev/null -T -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
-        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" \
-        -p "$port" "root@$host" \
+    STATE_SSH_TIMEOUT=20 state_ssh "$host" "$port" \
         "python3 -c 'import sys; source=sys.stdin.read(); exec(source)' host $label $game $session $resolution" \
         < "$RUNTIME_DIR/display_mode.py"
 )
@@ -337,7 +335,7 @@ launch_moonlight() {
             <<<"$stream_preference" > "$hud_directory/menu.state"
         hud_environment=("LD_PRELOAD=$hud_library${LD_PRELOAD:+:$LD_PRELOAD}" "VASTGAME_HUD_DIR=$hud_directory"
             'VASTGAME_HUD_FONT=/usr/share/fonts/TTF/DejaVuSans.ttf')
-        echo "Performance HUD: Ctrl+Alt+Shift+H toggle · Ctrl+Alt+Shift+M stream menu · Alt+Tab local windows"
+        echo "Performance HUD: Ctrl+Alt+Shift+H toggle · Ctrl+Shift+Q stream menu · Alt+Tab local windows"
     elif [[ -n "$session_id" && "${VASTGAME_WINDOWS:-0}" == 1 ]]; then
         echo "Moonlight statistics: Ctrl+Alt+Shift+S toggle (native Windows overlay)"
     elif [[ -n "$session_id" && "$(jq -r '.moonlight_options["performance-overlay"]' <<<"$stream_config")" == true ]]; then

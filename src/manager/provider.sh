@@ -117,9 +117,16 @@ pick_instance() {
 # A successful destroy response is only acceptance; retain local identity until
 # the provider confirms the exact contract is absent from the account listing.
 destroy_verified() {
-    local id="$1" info listing attempt
-    info="$(instance_json "$id")" || return 1
+    local id="$1" expected="${2:-}" info listing attempt
+    [[ "$id" =~ ^[0-9]+$ && ( -z "$expected" || "$expected" =~ ^vastgame-[0-9]+$ ) ]] || return 1
+    if ! info="$(instance_json "$id")"; then
+        listing="$(vastai show instances --raw 2>/dev/null)" || return 1
+        jq -e --arg id "$id" 'type == "array" and all(.[]; (.id|tostring) != $id)' >/dev/null <<<"$listing" || return 1
+        if [[ "$(cat "$INSTANCE_FILE" 2>/dev/null || true)" == "$id" ]]; then rm -f "$INSTANCE_FILE"; fi
+        return 0
+    fi
     jq -e --arg id "$id" '(.id|tostring) == $id and (.label|test("^vastgame-[0-9]+$"))' >/dev/null <<<"$info" || return 1
+    [[ -z "$expected" ]] || jq -e --arg label "$expected" '.label == $label' >/dev/null <<<"$info" || return 1
     vastai destroy instance "$id" -y || return 1
     for attempt in {1..18}; do
         listing="$(vastai show instances --raw 2>/dev/null)" || return 1

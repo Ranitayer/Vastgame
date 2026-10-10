@@ -40,3 +40,21 @@ class ShutdownGateTests(unittest.TestCase):
                 fcntl.flock(lock, fcntl.LOCK_SH)
                 with self.assertRaises(BlockingIOError): module.freeze('vastgame-123', 'fixture', root, profiles)
                 self.assertFalse((root/'stopping').exists())
+
+    def test_cli_uses_guest_identity_and_can_cancel_during_restore(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, profiles = self.fixture(temporary)
+            (root/'game-id').write_text('fixture')
+            (root/'bootstrap-launch-guard-v1').touch()
+            self.assertEqual(module.freeze('vastgame-123', root=root, profiles=profiles), 'unstarted')
+            self.assertTrue((root/'stopping').exists())
+            (root/'game-started').touch()
+            self.assertEqual(module.freeze('vastgame-123', root=root, profiles=profiles), 'started')
+            with self.assertRaises(ValueError): module.freeze('vastgame-123', 'other', root, profiles)
+
+    def test_cli_old_runtime_without_activity_evidence_is_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, profiles = self.fixture(temporary)
+            (root/'session.json').write_text('{"game_id":"fixture"}')
+            self.assertEqual(module.freeze('vastgame-123', root=root, profiles=profiles), 'unknown')
+            self.assertFalse((root/'stopping').exists())

@@ -112,7 +112,7 @@ screen to the selected resolution through the verified VM connection. Higher
 resolutions then become available to games that refresh their display modes.
 Games that cache modes at launch may need a game restart. A resize failure shows
 a warning and keeps streaming available; game settings and saves are not rewritten.
-On native Linux Moonlight, press Ctrl+Alt+Shift+M during a stream for the
+On native Linux Moonlight, press Ctrl+Shift+Q during a stream for the
 bottom-left stream menu. Use Up/Down to select, Left/Right to adjust, Enter on
 Save, and Escape to close. Resolution, FPS, bitrate, codec, VSync and frame
 pacing are saved to the same `stream.json`; reconnect Moonlight to apply them.

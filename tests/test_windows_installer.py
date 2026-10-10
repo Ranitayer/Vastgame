@@ -46,6 +46,22 @@ class WindowsUpdateTests(unittest.TestCase):
         self.assertIn('Get-FileHash -LiteralPath $zip -Algorithm SHA256', source)
         self.assertIn('Download checksum mismatch; no update applied.', source)
 
+    def test_tailnet_ssh_proxy_preserves_binary_packets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root/'vastgame').mkdir()
+            executable = root/'Tailscale.exe'
+            executable.write_text('#!/bin/bash\ncat\n')
+            executable.chmod(0o755)
+            (root/'vastgame/windows.json').write_text(json.dumps({'tailscale': str(executable)}))
+            bridge = root/'tailscale'
+            bridge.write_bytes((WINDOWS/'windows-bridge.sh').read_bytes())
+            packet = b'SSH-2.0-peer\r\n\x00\xff\x0d\x0a\x80\r\n'
+            result = subprocess.run(['bash', str(bridge), 'nc', '100.76.110.5', '22'], input=packet,
+                env=dict(os.environ, XDG_CONFIG_HOME=str(root)), capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, packet)
+
     def test_windows_bridge_preserves_configured_codec_and_pairing_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); moonlight=root/'Moonlight'; moonlight.mkdir()

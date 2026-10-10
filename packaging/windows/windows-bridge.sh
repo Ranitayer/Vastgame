@@ -12,6 +12,8 @@ native_powershell() {
 case "${0##*/}" in
   tailscale)
     executable="$(jq -er '.tailscale' "$cfg")"
+    # nc carries binary SSH packets; text conversion would corrupt the connection.
+    if [[ "${1:-}" == nc ]]; then exec "$executable" "$@"; fi
     "$executable" "$@" | sed 's/\r$//'
     ;;
   moonlight)

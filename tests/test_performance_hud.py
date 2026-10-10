@@ -309,11 +309,16 @@ int main(int argc,char** argv) {
       e.key.keysym.mod=mods; SDL_PushEvent(&e); SDL_PollEvent(&e); };
     key(SDLK_h); auto hidden=render(); assert(hidden && hidden->w==1 && hidden->h==1); SDL_FreeSurface(hidden);
     key(SDLK_h); auto full=render(); assert(full && full->h>150 && full->h<250); SDL_FreeSurface(full);
-    key(SDLK_m);
+    key(SDLK_q,KMOD_LCTRL|KMOD_LSHIFT);
     std::ifstream opened(std::string(argv[1])+"/menu.toggle"); std::string state; std::getline(opened,state);
     assert(state=="open");
-    key(SDLK_m,KMOD_RCTRL|KMOD_RALT|KMOD_RSHIFT);
+    key(SDLK_q,KMOD_RCTRL|KMOD_RSHIFT);
     std::ifstream closed(std::string(argv[1])+"/menu.toggle"); std::getline(closed,state); assert(state=="closed");
+    // Moonlight's Ctrl+Alt+Shift+Q quit shortcut must still reach its own handler.
+    SDL_Event quitShortcut{}; quitShortcut.type=SDL_KEYDOWN; quitShortcut.key.keysym.sym=SDLK_q;
+    quitShortcut.key.keysym.mod=KMOD_LCTRL|KMOD_LALT|KMOD_LSHIFT;
+    SDL_PushEvent(&quitShortcut); SDL_Event quitReceived{}; assert(SDL_PollEvent(&quitReceived));
+    assert(quitReceived.type==SDL_KEYDOWN && quitReceived.key.keysym.sym==SDLK_q);
     SDL_Event altTab{}; altTab.type=SDL_KEYDOWN; altTab.key.keysym.sym=SDLK_TAB; altTab.key.keysym.mod=KMOD_ALT;
     SDL_PushEvent(&altTab); SDL_Event received{}; assert(SDL_PollEvent(&received));
     assert(received.type==SDL_KEYDOWN && received.key.keysym.sym==SDLK_TAB);

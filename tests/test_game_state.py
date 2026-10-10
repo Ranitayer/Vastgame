@@ -188,9 +188,9 @@ class StopTests(unittest.TestCase):
         fn = cli[cli.index('stop_game() {'):cli.index('\n# ============================================================\n# GAME CATALOG', cli.index('stop_game() {'))]
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp)/'destroy'
-            code = "pick_instance() { echo 123; }; safe_backup() { return 1; }; warn() { :; }; ok() { :; }; vastai() { echo destroyed > \"$DESTROY_LOG\"; }; " + fn + '\nstop_game'
+            code = "pick_instance() { echo 123; }; instance_json() { echo '{\"id\":123,\"label\":\"vastgame-123\"}'; }; verified_state_endpoint() { printf 'host\\t22\\n'; }; startup_shutdown_state() { echo unknown; }; safe_backup() { return 1; }; warn() { :; }; ok() { :; }; vastai() { echo destroyed > \"$DESTROY_LOG\"; }; " + fn + '\nstop_game'
             import os
-            r = subprocess.run(['bash','-c',code], env=dict(os.environ,DESTROY_LOG=str(log)), capture_output=True)
+            r = subprocess.run(['bash','-c',code], env=dict(os.environ,DESTROY_LOG=str(log),STATEDIR=tmp), capture_output=True)
             self.assertEqual(r.returncode, 1); self.assertFalse(log.exists())
 
     def test_retry_after_first_interrupted_upload(self):

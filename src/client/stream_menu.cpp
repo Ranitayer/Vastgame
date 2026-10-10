@@ -234,8 +234,8 @@ bool stream_menu_event(SDL_Event* event) {
     if (!event) return false;
     std::lock_guard<std::mutex> lock(guard);
     if ((event->type == SDL_KEYDOWN || event->type == SDL_KEYUP) &&
-        event->key.keysym.sym == SDLK_m && (event->key.keysym.mod & KMOD_CTRL) &&
-        (event->key.keysym.mod & KMOD_ALT) && (event->key.keysym.mod & KMOD_SHIFT)) {
+        event->key.keysym.sym == SDLK_q && (event->key.keysym.mod & KMOD_CTRL) &&
+        (event->key.keysym.mod & KMOD_SHIFT) && !(event->key.keysym.mod & (KMOD_ALT | KMOD_GUI))) {
         if (event->type == SDL_KEYDOWN && !event->key.repeat) {
             load(); opened = !opened; dirty = true;
             publish("menu.toggle", opened ? "open\n" : "closed\n");

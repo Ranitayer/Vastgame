@@ -3,7 +3,7 @@
 # ============================================================
 
 connect_game() {
-    local id ip info expected="${2:-}"
+    local id info expected="${2:-}"
 
     if [[ -n "$expected" ]]; then
         id="$1"
@@ -16,12 +16,8 @@ connect_game() {
 
     printf '%s\n' "$id" > "$INSTANCE_FILE"
 
-    if [[ -n "$expected" ]]; then
-        ip="$(get_vast_ip "$id")" || die "Selected rig is not reachable on Tailscale. VM retained."
-        launch_moonlight "$ip"
-    else
-        wait_for_gaming "$id"
-    fi
+    # A reachable peer is not proof that game/runtime/save preparation finished.
+    wait_for_gaming "$id"
 }
 
 show_logs() {
@@ -51,7 +47,7 @@ Vastgame — multi-game Vast cloud gaming manager
 
 In-game performance HUD (native Linux Moonlight):
   Ctrl+Alt+Shift+H                  Show/hide the top-left HUD
-  Ctrl+Alt+Shift+M                  Open stream settings menu (arrows, Enter, Escape)
+  Ctrl+Shift+Q                  Open stream settings menu (arrows, Enter, Escape)
   Alt+Tab                          Switch local windows during gameplay
   Session logs: ~/.local/state/vastgame/hud.*/metrics.jsonl
 
@@ -61,6 +57,8 @@ VM lifecycle:
     --offer-id <id> [--machine-id <id>] --max-price <$/hr> --yes
                                    Use this exact eligible offer without interactive prompts
   vastgame force ...                Compatibility alias for the same command
+  vastgame stop --force --instance-id ID --label LABEL
+                                  Destroy the exact rig without backup; unbacked saves are lost
   vastgame connect                  Resume monitoring an existing Vastgame VM
   vastgame status                   Show current Vast instances
   vastgame hosts --json [--game ID] Browse scored NVIDIA VM offers; all regions, no price cap
@@ -155,11 +153,17 @@ esac
 # Lifecycle operations serialize independently from catalog publication.
 case "$command" in
     start|connect|stop|add|select|package|remove|dlss|saves|backup|restore|resume|setup)
-        exec 8>"$STATEDIR/lifecycle.lock"
-        if [[ "$command" == stop && "${1:-}" == --instance-id ]]; then
-            flock -w 90 8 || die "Previous launch has not released the lifecycle lock; VM retained"
+        if [[ "$command" == stop && "$#" == 5 && "$1" == --force && "$2" == --instance-id && "$3" =~ ^[0-9]+$ && "$4" == --label && "$5" =~ ^vastgame-[0-9]+$ ]]; then
+            # Explicit force cannot wait behind the backup it is meant to interrupt.
+            exec 9>"$STATEDIR/force-stop.$3.lock"
+            flock -n 9 || die "Force shutdown already active for this rig"
         else
-            flock -n 8 || die "Another Vastgame operation is active. Wait for it to finish."
+            exec 8>"$STATEDIR/lifecycle.lock"
+            if [[ "$command" == stop && "${1:-}" == --instance-id ]]; then
+                flock -w 90 8 || die "Previous launch has not released the lifecycle lock; VM retained"
+            else
+                flock -n 8 || die "Another Vastgame operation is active. Wait for it to finish."
+            fi
         fi
         ;;
 esac
@@ -184,7 +188,7 @@ case "$command" in
         exec python3 "$CLIENT_DIR/desktop_launch.py" current "$@"
         ;;
     desktop-shutdown)
-        [[ "$#" == 1 ]] || die "Invalid desktop shutdown request"
+        [[ "$#" == 1 || ( "$#" == 2 && "$2" == --force ) ]] || die "Invalid desktop shutdown request"
         exec python3 "$CLIENT_DIR/desktop_launch.py" stop "$@"
         ;;
     desktop-connect)
@@ -246,9 +250,10 @@ case "$command" in
     streamedit) edit_stream_settings ;;
     stop)
         if (( $# == 0 )); then stop_game
+        elif [[ "$#" == 5 && "$1" == --force && "$2" == --instance-id && "$3" =~ ^[0-9]+$ && "$4" == --label && "$5" =~ ^vastgame-[0-9]+$ ]]; then stop_game "$3" "$5" "" --force
         elif [[ "$#" == 4 && "$1" == --instance-id && "$3" == --label && "$2" =~ ^[0-9]+$ && "$4" =~ ^vastgame-[0-9]+$ ]]; then stop_game "$2" "$4"
         elif [[ "$#" == 6 && "$1" == --instance-id && "$3" == --label && "$5" == --startup-job && "$2" =~ ^[0-9]+$ && "$4" =~ ^vastgame-[0-9]+$ && "$6" =~ ^[a-f0-9]{32}$ ]]; then stop_game "$2" "$4" "$6"
-        else die "Usage: vastgame stop [--instance-id ID --label LABEL]"; fi
+        else die "Usage: vastgame stop [--instance-id ID --label LABEL] or stop --force --instance-id ID --label LABEL"; fi
         ;;
     status) vastai show instances ;;
     connect)

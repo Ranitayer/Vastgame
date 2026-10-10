@@ -80,9 +80,11 @@ pub async fn connect_game(job_id: String, events: Channel<Value>, state: tauri::
 }
 
 #[tauri::command]
-pub async fn shutdown_game(job_id: String, events: Channel<Value>) -> Result<(), String> {
+pub async fn shutdown_game(job_id: String, force: bool, events: Channel<Value>) -> Result<(), String> {
     if !identity(&job_id) { return Err("Invalid launch identity.".into()); }
-    tauri::async_runtime::spawn_blocking(move || stream(vec!["desktop-shutdown".into(), job_id], events))
+    let mut args = vec!["desktop-shutdown".into(), job_id];
+    if force { args.push("--force".into()); }
+    tauri::async_runtime::spawn_blocking(move || stream(args, events))
         .await.map_err(|_| "Shutdown worker could not finish.".to_string())?
 }
 

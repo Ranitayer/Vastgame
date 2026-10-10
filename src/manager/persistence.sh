@@ -4,30 +4,51 @@
 
 # Verify the selected VM before deploying isolated state helpers or accessing saves.
 verified_state_endpoint() {
-    local info="$1" label="$2" host port remote_label seen=""
+    local info="$1" label="$2" host port remote_label error_file detail seen=""
+    error_file="$(mktemp "$STATEDIR/ssh-error.XXXXXX")" || return 1
     while IFS=$'\t' read -r host port; do
         [[ "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9.:-]*$ && "$port" =~ ^[0-9]{1,5}$ ]] || continue
         (( 10#$port >= 1 && 10#$port <= 65535 )) || continue
         [[ "$seen" != *"|$host:$port|"* ]] || continue
         seen+="|$host:$port|"
-        if ! remote_label="$(timeout 20 ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 \
-            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" \
-            -p "$port" "root@$host" 'cat /var/lib/vast-gaming/status/instance-label' 2>/dev/null)"; then
-            warn "SSH unavailable at $host:$port; trying the next Vast endpoint" >&2
+        if ! remote_label="$(STATE_SSH_TIMEOUT=20 state_ssh "$host" "$port" 'cat /var/lib/vast-gaming/status/instance-label' 2>"$error_file")"; then
+            detail="$(tail -c 1024 "$error_file")"
+            warn "SSH failed at $host:$port: ${detail:-connection timed out or closed}; trying the next endpoint" >&2
             continue
         fi
-        [[ "$remote_label" == "$label" ]] || { warn "Connected VM launch label differs; refusing state changes" >&2; return 1; }
+        [[ "$remote_label" == "$label" ]] || { rm -f "$error_file"; warn "Connected VM launch label differs; refusing state changes" >&2; return 1; }
+        rm -f "$error_file"
         printf '%s\t%s\n' "$host" "$port"
         return 0
-    done < <(jq -r '.public_ipaddr as $ip | [{host: .ssh_host, port: .ssh_port},
-        (.ports["22/tcp"][]? | {host: $ip, port: .HostPort})][] |
-        select(.host != null and .port != null) | [.host, (.port | tostring)] | @tsv' <<<"$info")
+    done < <(
+        local ip id
+        id="$(jq -r '.id // empty' <<<"$info")"
+        ip="$(get_vast_ip "$id" 2>/dev/null || true)"
+        if [[ "$ip" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf '%s\t22\n' "$ip"; fi
+        jq -r '.public_ipaddr as $ip | [{host: .ssh_host, port: .ssh_port},
+            (.ports["22/tcp"][]? | {host: $ip, port: .HostPort})][] |
+            select(.host != null and .port != null) | [.host, (.port | tostring)] | @tsv' <<<"$info"
+    )
+    rm -f "$error_file"
     warn "No verified SSH endpoint reachable; VM retained" >&2
     return 1
 }
 
+# Tailscale's local agent carries SSH bytes even when Windows WSL has no tailnet route.
+state_ssh() {
+    local host="$1" port="$2"; shift 2
+    local -a proxy=() deadline=()
+    [[ -z "${STATE_SSH_TIMEOUT:-}" ]] || deadline=(timeout "$STATE_SSH_TIMEOUT")
+    if [[ "$host" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ && "$port" == 22 ]]; then
+        proxy=(-o 'ProxyCommand=tailscale nc %h %p')
+    fi
+    "${deadline[@]}" ssh -F /dev/null -T -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 \
+        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" \
+        "${proxy[@]}" -p "$port" "root@$host" "$@"
+}
+
 remote_state() (
-    local action="$1" id="$2" wanted="${3:-}" final="${4:-}" info host port label gid temp receipt helper_sha manifest_sha
+    local action="$1" id="$2" wanted="${3:-}" final="${4:-}" endpoint="${5:-}" info host port label gid temp receipt helper_sha manifest_sha
     case "$action" in backup|restore|resume) ;; *) return 1 ;; esac
     [[ -z "$final" || "$final" == --final ]] || return 1
     local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
@@ -35,12 +56,10 @@ remote_state() (
     jq -e --arg id "$id" '(.id|tostring) == $id' >/dev/null <<<"$info" || return 1
     label="$(jq -r '.label // empty' <<<"$info")"
     [[ "$label" =~ ^vastgame-[0-9]+$ ]] || { warn "Refusing state access on an unrelated instance"; return 1; }
-    local endpoint
-    endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
+    [[ -n "$endpoint" ]] || endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
     host="${endpoint%%$'\t'*}"
     port="${endpoint#*$'\t'}"
-    local -a remote_ssh=(ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1
-        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" -p "$port" "root@$host")
+    local -a remote_ssh=(state_ssh "$host" "$port")
     temp="$(mktemp -d "$STATEDIR/state.XXXXXX")"
     trap 'rm -rf -- "$temp"' EXIT
     local remote_label
@@ -93,46 +112,67 @@ STATE_HELPER
     rm -rf "$temp"
 )
 
-safe_backup() { remote_state backup "$1" "" --final; }
+safe_backup() { remote_state backup "$1" "" --final "${2:-}"; }
 
 # ============================================================
 # STOP
 # ============================================================
 
-# Only exact desktop-owned startup jobs may use the no-game shutdown path.
+# Freeze the verified guest before deciding whether a final backup is necessary.
 startup_shutdown_state() {
-    local id="$1" info="$2" label="$3" job="$4" record gid endpoint host port
-    [[ "$job" =~ ^[a-f0-9]{32}$ ]] || return 1
-    record="$STATEDIR/desktop/$job/job.json"
-    jq -e --arg id "$id" --arg label "$label" --arg job "$job" '.job == $job and .instance_id == $id and .label == $label' "$record" >/dev/null || return 1
+    local id="$1" info="$2" label="$3" job="${4:-}" record gid="" endpoint="${5:-}" host port
+    if [[ -n "$job" ]]; then
+        [[ "$job" =~ ^[a-f0-9]{32}$ ]] || return 1
+        record="$STATEDIR/desktop/$job/job.json"
+        jq -e --arg id "$id" --arg label "$label" --arg job "$job" '.job == $job and .instance_id == $id and .label == $label' "$record" >/dev/null || return 1
+        gid="$(jq -r '.game' "$record")"
+        valid_game_id "$gid" || return 1
+    fi
     # Current provider status and a client watcher cannot prove lifetime activity.
-    # Only the verified guest's frozen launch guard may authorize skipping backup.
-    gid="$(jq -r '.game' "$record")"
-    valid_game_id "$gid" || return 1
     local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
-    endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
+    [[ -n "$endpoint" ]] || endpoint="$(verified_state_endpoint "$info" "$label")" || return 1
     host="${endpoint%%$'\t'*}"; port="${endpoint#*$'\t'}"
-    timeout 15 ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
-        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS" -p "$port" "root@$host" \
-        "python3 - $label $gid" < "$RUNTIME_DIR/shutdown_gate.py"
+    STATE_SSH_TIMEOUT=15 state_ssh "$host" "$port" "python3 - $label $gid" < "$RUNTIME_DIR/shutdown_gate.py"
 }
 
 stop_game() {
-    local id
+    local id info
+    if [[ "${4:-}" == --force ]]; then
+        id="${1:-}"
+        [[ "$id" =~ ^[0-9]+$ && "${2:-}" =~ ^vastgame-[0-9]+$ ]] || return 1
+        warn "Force shutdown requested: skipping guest access and save backup; unbacked saves may be lost."
+        echo "Destroying Vast instance $id..."
+        destroy_verified "$id" "$2" || { warn "Force destruction not confirmed; instance identity retained."; return 1; }
+        ok "Instance destroyed — GPU billing stopped"
+        return 0
+    fi
+
     if [[ -n "${1:-}" ]]; then
         id="$1"
-        local info
         info="$(instance_json "$id")" || { warn "Cannot verify exact VM; no shutdown performed"; return 1; }
         jq -e --arg id "$id" --arg label "$2" '(.id|tostring) == $id and .label == $label' >/dev/null <<<"$info" || { warn "VM identity differs; no shutdown performed"; return 1; }
     else
         id="$(pick_instance)" || { echo "No vastgame instances found."; return 0; }
     fi
 
-    local startup_state="unknown"
-    if [[ -n "${3:-}" ]]; then startup_state="$(startup_shutdown_state "$id" "$info" "$2" "$3" || true)"; fi
+
+    # CLI stop uses the same guest lifetime check as the desktop X.
+    if [[ -z "${1:-}" ]]; then
+        info="$(instance_json "$id")" || { warn "Cannot verify VM; no shutdown performed"; return 1; }
+        jq -e --arg id "$id" '(.id|tostring) == $id' >/dev/null <<<"$info" || return 1
+    fi
+    local label startup_state="unknown" endpoint
+    local KNOWN_HOSTS="$STATEDIR/known_hosts.$id"
+    label="$(jq -r '.label // empty' <<<"$info")"
+    [[ "$label" =~ ^vastgame-[0-9]+$ ]] || { warn "VM identity differs; no shutdown performed"; return 1; }
+    endpoint="$(verified_state_endpoint "$info" "$label")" || {
+        warn "Cannot read guest activity: no authenticated connection. Backup and destruction skipped; VM still billing."
+        return 1
+    }
+    startup_state="$(startup_shutdown_state "$id" "$info" "$label" "${3:-}" "$endpoint" || true)"
     if [[ "$startup_state" == unstarted ]]; then
         ok "Game never started; skipping backup"
-    elif { echo "Backing up saves..."; safe_backup "$id"; }; then
+    elif { echo "Backing up saves..."; safe_backup "$id" "$endpoint"; }; then
 
         ok "Final Google Drive state backup complete"
 

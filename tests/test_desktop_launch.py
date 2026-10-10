@@ -5,10 +5,11 @@ import os
 import time
 from contextlib import redirect_stdout
 import tempfile
+import subprocess
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 CLIENT = Path(__file__).resolve().parents[1] / 'src/client'
 sys.path.insert(0, str(CLIENT))
@@ -17,6 +18,28 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 class DesktopLaunchTests(unittest.TestCase):
+    def test_exact_connect_waits_for_guest_preparation_before_streaming(self):
+        root = CLIENT.parents[1]
+        source = (root/'src/manager/commands.sh').read_text()
+        function = source[source.index('connect_game() {'):source.index('\nshow_logs()')]
+        with tempfile.TemporaryDirectory() as temporary:
+            code = r''' 
+instance_json() { printf '%s\n' '{"id":42,"label":"vastgame-123"}'; }
+wait_for_gaming() { printf 'WAIT_FOR_GAME_RUNTIME_SAVES %s\n' "$1"; }
+launch_moonlight() { echo STREAM_OPENED_TOO_EARLY; return 99; }
+get_vast_ip() { echo 100.76.110.5; }
+die() { echo "$*" >&2; return 1; }
+''' + function + '\nconnect_game 42 vastgame-123'
+            result = subprocess.run(['bash', '-Eeuo', 'pipefail', '-c', code],
+                env=dict(os.environ, INSTANCE_FILE=str(Path(temporary)/'instance')), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'WAIT_FOR_GAME_RUNTIME_SAVES 42')
+            self.assertEqual((Path(temporary)/'instance').read_text().strip(), '42')
+            wrong = subprocess.run(['bash', '-Eeuo', 'pipefail', '-c', code.replace('connect_game 42 vastgame-123', 'connect_game 42 vastgame-999')],
+                env=dict(os.environ, INSTANCE_FILE=str(Path(temporary)/'instance')), capture_output=True, text=True)
+            self.assertNotEqual(wrong.returncode, 0)
+            self.assertNotIn('WAIT_FOR_GAME', wrong.stdout)
+
     def test_connect_uses_only_the_stored_vm_and_preserves_it_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary); job = 'a' * 32; folder = state / job; folder.mkdir()
@@ -168,6 +191,53 @@ class DesktopLaunchTests(unittest.TestCase):
                 kill.assert_not_called()
                 run.assert_called_once_with(['stop', '--instance-id', '42', '--label', 'vastgame-123', '--startup-job', job], folder)
                 emit.assert_called_with('finished', ok=False, phase='Shutdown failed; VM retained', instance_id='42')
+
+    def test_second_shutdown_forces_exact_vm_and_cannot_be_revived_by_old_backup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); job = 'a'*32; folder = state/job; folder.mkdir()
+            path = folder/'job.json'
+            path.write_text(json.dumps(dict(job=job, game='fixture', instance_id='42', label='vastgame-123')))
+            def run(args, target):
+                self.assertEqual(target, folder)
+                if '--force' in args:
+                    self.assertEqual(args, ['stop', '--force', '--instance-id', '42', '--label', 'vastgame-123'])
+                    return 0, False
+                module.stop(job, force=True)
+                return 1, True
+            with patch.object(module, 'STATE', state), patch.object(module, 'interrupt_worker') as interrupt, patch.object(module, 'run', side_effect=run), patch.object(module, 'emit') as emit:
+                module.stop(job)
+                interrupt.assert_any_call(ANY, job, 'stop_', 'stop')
+                completions = [call for call in emit.call_args_list if call.args[0] == 'finished']
+                self.assertEqual(len(completions), 1)
+                self.assertTrue(completions[0].kwargs['ok'])
+            record = json.loads(path.read_text())
+            self.assertTrue(record['stopped'])
+            self.assertIsNone(record['instance_id'])
+            self.assertTrue(record['shutdown_requested'])
+            self.assertTrue(record['force_shutdown'])
+            self.assertIsNone(module.update_job(folder, instance_id='42', success=False, phase='Late failure')['instance_id'])
+
+    def test_failed_normal_shutdown_persists_force_choice_for_reopening(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); job = 'a'*32; folder = state/job; folder.mkdir()
+            path = folder/'job.json'
+            path.write_text(json.dumps(dict(job=job, instance_id='42', label='vastgame-123')))
+            with patch.object(module, 'STATE', state), patch.object(module, 'interrupt_worker'), patch.object(module, 'run', return_value=(1, False)), patch.object(module, 'emit'):
+                module.stop(job)
+            record = json.loads(path.read_text())
+            self.assertEqual(record['instance_id'], '42')
+            self.assertTrue(record['shutdown_requested'])
+            self.assertEqual(record['phase'], 'Shutdown failed; VM retained')
+
+    def test_force_worker_signal_pins_identity_and_rejects_pid_reuse_or_other_jobs(self):
+        record = dict(stop_pid=12, stop_birth='expected')
+        for births, command in ((['expected', 'reused'], b''), (['expected', 'expected'], b'python3\0/app/src/client/desktop_launch.py\0stop\0'+b'b'*32+b'\0')):
+            with patch.object(module, 'birth', side_effect=births), patch.object(module.os, 'pidfd_open', return_value=99), patch.object(module.os, 'close'), patch.object(Path, 'read_bytes', return_value=command), patch.object(module.signal, 'pidfd_send_signal') as kill:
+                module.interrupt_worker(record, 'a'*32, 'stop_', 'stop')
+                kill.assert_not_called()
+        with patch.object(module, 'birth', return_value='expected'), patch.object(module.os, 'pidfd_open', return_value=99), patch.object(module.os, 'close'), patch.object(Path, 'read_bytes', return_value=b'python3\0/app/src/client/desktop_launch.py\0stop\0'+b'a'*32+b'\0'), patch.object(module.signal, 'pidfd_send_signal') as kill:
+            module.interrupt_worker(record, 'a'*32, 'stop_', 'stop')
+            kill.assert_called_once_with(99, module.signal.SIGTERM)
 
     @unittest.skipUnless(sys.platform == 'linux', 'The backend runs in Linux or WSL')
     def test_reopened_completed_game_reports_running_without_exposing_private_metadata(self):

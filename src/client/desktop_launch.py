@@ -63,27 +63,36 @@ def update_job(folder, **changes):
         fcntl.flock(lock, fcntl.LOCK_EX)
         path = folder / 'job.json'
         record = json.loads(path.read_text())
-        if not record.get('stopped'):
+        if not record.get('stopped') and (not record.get('force_shutdown') or changes.get('force_shutdown') or changes.get('stopped')):
             record.update(changes)
             json_write(path, record)
         return record
 
 
 def run(args, folder, record=None):
-    process = subprocess.Popen([str(BIN), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, start_new_session=True,
-                               env=dict(os.environ, VASTGAME_DESKTOP='1', PYTHONUNBUFFERED='1', VASTAI_NO_UPDATE_CHECK='1',
-                                        VASTGAME_LAUNCH_LABEL=record['label'] if record else ''))
-    if record is not None:
-        record.update(update_job(folder, engine_pid=process.pid, engine_birth=birth(process.pid)))
+    process = None
     interrupted = False
     def interrupt(_signum, _frame):
         nonlocal interrupted
         interrupted = True
-        if process.poll() is None:
+        if process is not None and process.poll() is None:
             try: os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError: pass
+    # Install cancellation before spawning, including a force click during startup.
     previous = signal.signal(signal.SIGTERM, interrupt)
+    try:
+        process = subprocess.Popen([str(BIN), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, start_new_session=True,
+                                   env=dict(os.environ, VASTGAME_DESKTOP='1', PYTHONUNBUFFERED='1', VASTAI_NO_UPDATE_CHECK='1',
+                                            VASTGAME_LAUNCH_LABEL=record['label'] if record else ''))
+        if record is not None:
+            record.update(update_job(folder, engine_pid=process.pid, engine_birth=birth(process.pid)))
+        superseded = args[0] == 'stop' and '--force' not in args and json.loads((folder/'job.json').read_text()).get('force_shutdown')
+        if interrupted or superseded: interrupt(None, None)
+    except BaseException:
+        if process is not None: interrupt(None, None)
+        signal.signal(signal.SIGTERM, previous)
+        raise
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     buffer = b''
@@ -93,8 +102,8 @@ def run(args, folder, record=None):
     def output(raw):
         nonlocal secret, last_phase
         global last_error
-        line = ANSI.sub('', raw.decode(errors='replace')).strip()
-        if not line:
+        line = ANSI.sub('', raw.decode(errors='replace')).rstrip()
+        if not line.strip():
             return
         if line.startswith('[VASTGAME_PROGRESS]') and record is not None:
             data = json.loads(line[len('[VASTGAME_PROGRESS]'):])
@@ -113,8 +122,6 @@ def run(args, folder, record=None):
             if isinstance(error, dict) and isinstance(error.get('code'), str) and isinstance(error.get('message'), str):
                 last_error = error
                 emit('error', error=error)
-                emit('log', line=f"[{error['code']}] {error['message']}")
-            return
         if line.startswith('ERROR:') and last_error is None:
             last_error = dict(code='ENGINE_ERROR', message=redact(line[6:].strip())[:4096])
             emit('error', error=last_error)
@@ -192,21 +199,50 @@ def launch(job, game, offer, price, machine="0"):
     emit('finished', ok=code == 0, phase='Ready' if code == 0 else 'Watcher stopped; VM retained' if interrupted else (last_error or {}).get('message', 'Launch failed – check Logs'), instance_id=record['instance_id'])
 
 
-def stop(job):
+def interrupt_worker(record, job, prefix='', mode='launch'):
+    pid, expected = record.get(prefix+'pid'), record.get(prefix+'birth')
+    if type(pid) is not int or not expected or birth(pid) != expected: return
+    descriptor = None
+    try:
+        descriptor = os.pidfd_open(pid)
+        if birth(pid) != expected: return
+        command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+        script = next((index for index, part in enumerate(command) if part.endswith(b'/desktop_launch.py')), None)
+        if script is None: return
+        arguments = [part for part in command[script+1:] if part]
+        if arguments[:2] != [mode.encode(), job.encode()]: return
+        if mode == 'stop' and len(arguments) != 2: return
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+    except OSError:
+        emit('log', line='Could not interrupt the owned worker; exact VM shutdown will still be attempted.')
+    finally:
+        if descriptor is not None: os.close(descriptor)
+
+
+def stop(job, force=False):
     folder = STATE / job
     record = json.loads((folder / 'job.json').read_text())
     instance, label = record.get('instance_id'), record.get('label')
     if record.get('job') != job or not isinstance(instance, str) or not re.fullmatch(r'[0-9]+', instance) or not isinstance(label, str) or not re.fullmatch(r'vastgame-[0-9]+', label):
         raise ValueError('VM identity is not available yet. Wait for creation before shutdown')
-    pid = record.get('pid')
-    if type(pid) is int and birth(pid) and birth(pid) == record.get('birth'):
-        command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-        if b'launch' in command and job.encode() in command and any(part.endswith(b'/desktop_launch.py') for part in command):
-            os.kill(pid, signal.SIGTERM)
-    emit('status', phase='Checking rig')
-    code, _ = run(['stop', '--instance-id', instance, '--label', label, '--startup-job', job], folder)
+    if force:
+        record = update_job(folder, force_shutdown=True, shutdown_requested=True, phase='Shutting down rig')
+        interrupt_worker(record, job, 'stop_', 'stop')
+    else:
+        record = update_job(folder, stop_pid=os.getpid(), stop_birth=birth(os.getpid()), shutdown_requested=True)
+        if record.get('force_shutdown'):
+            emit('finished', ok=False, phase='Shutdown superseded by force request', instance_id=instance)
+            return
+    interrupt_worker(record, job)
+    emit('status', phase='Shutting down rig' if force else 'Checking rig')
+    args = ['stop', '--force', '--instance-id', instance, '--label', label] if force else ['stop', '--instance-id', instance, '--label', label, '--startup-job', job]
+    code, _ = run(args, folder)
+    latest = json.loads((folder/'job.json').read_text())
+    if not force and latest.get('force_shutdown'): return
     if code == 0:
         update_job(folder, stopped=True, finished=True, success=True, instance_id=None, game_running=False, phase='Rig shut down')
+    else:
+        update_job(folder, finished=True, success=False, phase='Shutdown failed; VM retained', **({'force_shutdown': True} if force else {}))
     emit('finished', ok=code == 0, phase='Rig shut down' if code == 0 else 'Shutdown failed; VM retained', instance_id=None if code == 0 else instance)
 
 
@@ -216,6 +252,8 @@ def connect(job):
     instance, label = record.get('instance_id'), record.get('label')
     if record.get('job') != job or record.get('stopped') or not isinstance(instance, str) or not re.fullmatch(r'[0-9]+', instance) or not isinstance(label, str) or not re.fullmatch(r'vastgame-[0-9]+', label):
         raise ValueError('VM identity is not available. Refresh before connecting')
+    if record.get('force_shutdown'):
+        raise ValueError('Force shutdown unconfirmed. Retry X before connecting')
     if not record.get('finished') or alive(record) or alive(record, True):
         raise ValueError('Wait for the current rig operation to finish before connecting')
     code, _ = run(['connect', '--instance-id', instance, '--label', label], folder, record)
@@ -389,7 +427,7 @@ def current(job=None):
             if json.loads(path.read_text()).get('stopped'): continue
             game = next((game for game in games if game['id'] == gid), None)
             return dict(jobId=jid, gameId=gid, gameName=game['name'] if game else 'Game', instanceId=instance,
-                        phase=phase_name, status=status, gameRunning=running, stateFresh=observed is not None,
+                        phase=phase_name, status=status, shutdownRequested=bool(record.get('shutdown_requested')), gameRunning=running, stateFresh=observed is not None,
                         progress=record.get('progress'), observedAt=time.time() * 1000 if observed else record.get('game_observed_at', 0) * 1000)
         except (OSError, TypeError, KeyError, json.JSONDecodeError): continue
     return None
@@ -408,7 +446,7 @@ if __name__ == '__main__':
             raise ValueError('Invalid launch identity')
         STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
         if mode == 'launch' and len(args) == 4: launch(job, *args)
-        elif mode == 'stop' and not args: stop(job)
+        elif mode == 'stop' and (not args or args == ['--force']): stop(job, force=bool(args))
         elif mode == 'connect' and not args: connect(job)
         elif mode == 'watch' and not args: watch(job)
         else: raise ValueError('Invalid desktop operation')
